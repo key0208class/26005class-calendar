@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>班級行事曆 v1.6.0 (Firebase 公開版)</title>
+    <title>班級行事曆 v1.7.0 (AI辨識版)</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -1137,7 +1137,280 @@
                 showCustomAlert('讀取檔案時發生錯誤：' + error.message);
             }
         }
+// --- (v1.7.0) AI 辨識輔助工具函式 ---
 
+        // 開啟 AI 輔助 Modal
+        window.openAiHelperModal = () => {
+            if (!isAdmin) {
+                showCustomAlert("僅限管理員才能使用此功能！");
+                return;
+            }
+            document.getElementById('aiHelperModal').style.display = 'block';
+        }
+
+        // 關閉 AI 輔助 Modal
+        window.closeAiHelperModal = () => {
+            document.getElementById('aiHelperModal').style.display = 'none';
+        }
+
+        // 處理 AI 輸入 (文字或檔案)
+        window.processAiInput = async () => {
+            const textInput = document.getElementById('aiInputText').value.trim();
+            const fileInput = document.getElementById('aiImportFile');
+            const file = fileInput.files[0];
+
+            let content = '';
+
+            if (textInput) {
+                content = textInput;
+            } else if (file) {
+                if (file.type === 'text/plain') {
+                    try {
+                        content = await file.text();
+                    } catch (error) {
+                        showCustomAlert('讀取文字檔時發生錯誤：' + error.message);
+                        return;
+                    }
+                } else {
+                    showCustomAlert('目前僅支援 .txt 純文字檔的上傳。');
+                    fileInput.value = ''; // 清空選擇
+                    return;
+                }
+            } else {
+                showCustomAlert('請在左方欄位貼上文字或選擇一個 .txt 檔案。');
+                return;
+            }
+            
+            fileInput.value = ''; // 清空選擇
+            document.getElementById('aiInputText').value = ''; // 清空文字區
+
+            // 顯示處理中提示
+            const resultsContainer = document.getElementById('aiResultsContainer');
+            resultsContainer.innerHTML = '<div class="ai-no-result">🤖 AI 正在努力解析中，請稍候...</div>';
+            document.getElementById('importAllAiBtn').style.display = 'none';
+
+
+            // 模擬 AI 處理延遲
+            setTimeout(() => {
+                const parsedEvents = parseTextWithAI(content);
+                renderAiResults(parsedEvents);
+            }, 500);
+        }
+
+        /**
+         * 簡易的 "AI" 文字解析器
+         * @param {string} text - 使用者輸入的完整文字
+         * @returns {Array} - 解析後的事件物件陣列
+         */
+        function parseTextWithAI(text) {
+            // 將多個事件用分隔線 (---, ===, ___) 或多個換行來切分
+            const eventBlocks = text.split(/[\r\n]*\s*----+\s*|[\r\n]*\s*====+\s*|[\r\n]*\s*____+\s*|(?:\r?\n){3,}/);
+            const allParsedEvents = [];
+
+            eventBlocks.forEach((block, index) => {
+                if (block.trim().length < 5) return;
+
+                let event = {
+                    id: `ai_${Date.now()}_${index}`, // 臨時 ID
+                    title: '',
+                    date: '',
+                    time: '',
+                    description: '',
+                    speaker: '',
+                    location: '',
+                    notes: ''
+                };
+                
+                const lines = block.trim().split(/\r?\n/);
+                let currentSection = 'description'; // 預設剖析區塊
+
+                // 簡易標題擷取：通常是第一行或包含關鍵字的行
+                const titleCandidates = lines.filter(line => 
+                    /活動|主題|名稱|講座/.test(line) || /^[^\d\s\:\-：\-\/年月日]{5,}/.test(line.trim())
+                );
+                
+                if (titleCandidates.length > 0) {
+                    event.title = titleCandidates[0].replace(/.*[:：\s]/, '').trim();
+                } else if (lines.length > 0) {
+                    event.title = lines[0].trim();
+                }
+
+                lines.forEach(line => {
+                    const trimmedLine = line.trim();
+                    // 識別區塊關鍵字
+                    if (/^日期[:：]/.test(trimmedLine)) {
+                        currentSection = 'date';
+                        event.date += trimmedLine.replace(/^日期[:：]\s*/, '') + ' ';
+                    } else if (/^時間[:：]/.test(trimmedLine)) {
+                        currentSection = 'time';
+                        event.time += trimmedLine.replace(/^時間[:：]\s*/, '') + ' ';
+                    } else if (/^活動簡介[:：]/.test(trimmedLine) || /^內容[:：]/.test(trimmedLine)) {
+                        currentSection = 'description';
+                    } else if (/^講師[:：]/.test(trimmedLine) || /^主講人[:：]/.test(trimmedLine)) {
+                        currentSection = 'speaker';
+                        event.speaker = trimmedLine.replace(/^.*?[:：]\s*/, '');
+                    } else if (/^地點[:：]/.test(trimmedLine) || /^位置[:：]/.test(trimmedLine)) {
+                        currentSection = 'location';
+                        event.location = trimmedLine.replace(/^.*?[:：]\s*/, '');
+                    } else if (/^備註[:：]/.test(trimmedLine) || /^注意事項[:：]/.test(trimmedLine)) {
+                        currentSection = 'notes';
+                    } else {
+                        // 如果不是關鍵字行，則將內容附加到當前區塊
+                        const content = trimmedLine.replace(/^\[\d+\]\s*/, '').trim();
+                        if (content) {
+                            switch (currentSection) {
+                                case 'description': event.description += `[${event.description.split('[').length}] ${content}\n`; break;
+                                case 'notes': event.notes += `[${event.notes.split('[').length}] ${content}\n`; break;
+                                // 日期和時間可能在多行
+                                case 'date': event.date += content + ' '; break;
+                                case 'time': event.time += content + ' '; break;
+                            }
+                        }
+                    }
+                });
+
+                // --- 資料清理與格式化 ---
+                
+                // 整理日期
+                const dateMatch = (event.date + ' ' + block).match(/(\d{4})[年\/\-.]\s*(\d{1,2})[月\/\-.]\s*(\d{1,2})日?/);
+                if (dateMatch) {
+                    event.date = `${dateMatch[1]}-${String(dateMatch[2]).padStart(2, '0')}-${String(dateMatch[3]).padStart(2, '0')}`;
+                } else {
+                    event.date = ''; // 如果找不到標準日期，則清空
+                }
+                
+                // 整理時間
+                const timeMatch = (event.time + ' ' + block).match(/(\d{1,2}[:：]\d{2})/g);
+                if(timeMatch) {
+                    event.time = timeMatch.join('~');
+                } else {
+                    event.time = '';
+                }
+
+                // 整理標題 (簡化)
+                event.simplifiedTitle = event.title.length > 8 ? event.title.substring(0, 8) + '…' : event.title;
+                if (event.time) {
+                    const startTime = event.time.split('~')[0];
+                    event.displayTitle = `[${startTime}] ${event.simplifiedTitle}`;
+                } else {
+                    event.displayTitle = event.simplifiedTitle;
+                }
+
+                // 如果成功解析出日期和標題，才算是一個有效的事件
+                if (event.date && event.title) {
+                    allParsedEvents.push(event);
+                }
+            });
+
+            return allParsedEvents;
+        }
+
+        // 渲染 AI 辨識結果到畫面上
+        function renderAiResults(parsedEvents) {
+            const resultsContainer = document.getElementById('aiResultsContainer');
+            const importAllBtn = document.getElementById('importAllAiBtn');
+            resultsContainer.innerHTML = '';
+
+            if (parsedEvents.length === 0) {
+                resultsContainer.innerHTML = '<div class="ai-no-result">喔喔！在您提供的內容中找不到可辨識的活動資訊。</div>';
+                importAllBtn.style.display = 'none';
+                return;
+            }
+
+            importAllBtn.style.display = 'inline-block';
+            
+            // 將事件資料儲存在按鈕上，方便後續匯入
+            importAllBtn.dataset.events = JSON.stringify(parsedEvents);
+
+            parsedEvents.forEach(event => {
+                const card = document.createElement('div');
+                card.className = 'ai-result-card';
+                card.id = event.id;
+
+                // 格式化詳細內容
+                let detailsHtml = ``;
+                if(event.date) detailsHtml += `📆 日期: ${event.date} ${event.time}\n\n`;
+                if(event.description.trim()) detailsHtml += `💬 活動簡介\n${event.description.trim()}\n\n`;
+                if(event.speaker) detailsHtml += `👤 講師: ${event.speaker}\n\n`;
+                if(event.location) detailsHtml += `📍 地點: ${event.location}\n\n`;
+                if(event.notes.trim()) detailsHtml += `備註:\n${event.notes.trim()}`;
+
+                card.innerHTML = `
+                    <div class="ai-result-header">
+                        <h5>🏷️ ${event.displayTitle}</h5>
+                        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 0.8rem;">匯入</button>
+                    </div>
+                    <div class="ai-result-details">${detailsHtml.trim()}</div>
+                `;
+                
+                // 綁定事件
+                card.querySelector('.ai-result-header').addEventListener('click', (e) => {
+                    // 如果點擊的是匯入按鈕，則不展開/收合
+                    if (e.target.tagName === 'BUTTON') return;
+                    
+                    const details = card.querySelector('.ai-result-details');
+                    details.style.display = details.style.display === 'block' ? 'none' : 'block';
+                });
+
+                card.querySelector('button').addEventListener('click', (e) => {
+                    e.stopPropagation(); // 防止觸發 header 的點擊事件
+                    importEventFromAI(event, card);
+                });
+
+                resultsContainer.appendChild(card);
+            });
+        }
+        
+        // 從 AI 結果匯入單一事件
+        async function importEventFromAI(eventData, elementToRemove) {
+            if (!isAdmin) return;
+
+            // 組合要存到 Firebase 的資料
+            const newEvent = {
+                title: eventData.title,
+                // 把 AI 辨識的詳細結果全部放到 content 裡
+                content: `時間: ${eventData.time}\n簡介:\n${eventData.description}\n講師: ${eventData.speaker}\n地點: ${eventData.location}\n備註:\n${eventData.notes}`.trim(),
+                date: eventData.date,
+                startDate: eventData.date, // AI 辨識預設為單日事件
+                endDate: eventData.date,   // AI 辨識預設為單日事件
+                color: '', // 預設無顏色
+                emoji: '🤖', // 用機器人表情符號標示為 AI 匯入
+                groupId: generateGroupId() // 產生新的 groupId
+            };
+
+            try {
+                await addDoc(collection(db, 'public_events'), newEvent);
+                
+                // 從畫面上移除已匯入的項目
+                elementToRemove.style.transition = 'opacity 0.5s ease';
+                elementToRemove.style.opacity = '0';
+                setTimeout(() => {
+                    elementToRemove.remove();
+                    // 檢查是否所有項目都已匯入
+                    if (document.getElementById('aiResultsContainer').children.length === 0) {
+                         document.getElementById('aiResultsContainer').innerHTML = '<div class="ai-no-result">所有事件均已成功匯入！</div>';
+                         document.getElementById('importAllAiBtn').style.display = 'none';
+                    }
+                }, 500);
+
+            } catch (error) {
+                console.error("從 AI 匯入事件時發生錯誤:", error);
+                showCustomAlert("匯入事件失敗: " + error.message);
+            }
+        }
+        
+        // 匯入所有 AI 辨識的事件
+        window.importAllAiEvents = () => {
+             showCustomConfirm('確定要將目前辨識出的所有事件全部匯入行事曆嗎？', (choice) => {
+                if (choice === 'confirm') {
+                    const allResultCards = document.querySelectorAll('.ai-result-card');
+                    allResultCards.forEach(card => {
+                        // 找到對應的匯入按鈕並觸發它的點擊事件
+                        card.querySelector('button').click();
+                    });
+                }
+            });
+        }
         // 顯示自訂提示框
         function showCustomAlert(message) {
             const alertModal = document.getElementById('alertModal');
@@ -2180,8 +2453,127 @@
              color: var(--color-grey-dark);
              font-style: italic;
          }
-
-
+/* --- (v1.7.0 rev.1) 匯入區塊標題樣式 --- */
+        .import-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        .import-header h4 {
+            margin: 0; /* 移除 h4 的預設 margin */
+        }
+        .btn-ai {
+            /* (可自行修改) AI 辨識按鈕的大小 */
+            padding: 5px 12px;
+            font-size: 0.9rem;
+        }
+/* --- (v1.7.0) AI 辨識輔助工具 --- */
+        .ai-modal-content {
+            /* (可自行修改) AI 辨識視窗的最大寬度 */
+            max-width: 900px;
+            width: 95%;
+            /* (可自行修改) AI 辨識視窗的最大高度 */
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .ai-container {
+            display: flex;
+            gap: 20px;
+            flex-grow: 1;
+            min-height: 0; /* 讓 flex-grow 生效的關鍵 */
+        }
+        .ai-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--theme-input-bg);
+            border-radius: 10px;
+            padding: 15px;
+            border: 1px solid var(--theme-border);
+        }
+        .ai-panel h4 {
+            margin-top: 0;
+            border-bottom: 1px solid var(--theme-border);
+            padding-bottom: 10px;
+        }
+        .ai-panel-desc {
+            font-size: 0.85rem;
+            opacity: 0.8;
+            margin-top: 0;
+        }
+        #aiInputText {
+            width: 100%;
+            flex-grow: 1; /* 佔滿剩餘空間 */
+            resize: none;
+            box-sizing: border-box;
+            background: rgba(0,0,0,0.1);
+            color: var(--theme-input-text);
+            border: 1px solid var(--theme-border);
+            border-radius: 5px;
+            padding: 10px;
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+        }
+        .theme-ocean #aiInputText, .theme-spring #aiInputText, .theme-meadow #aiInputText {
+             background: rgba(255,255,255,0.4);
+        }
+        .ai-input-actions {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .ai-input-actions input[type="file"] {
+            color: var(--theme-modal-text);
+            font-size: 0.9rem;
+        }
+        .ai-result-actions {
+            margin-bottom: 10px;
+        }
+        #aiResultsContainer {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding-right: 5px; /* 預留滾動條空間 */
+        }
+        .ai-no-result {
+            text-align: center;
+            padding: 20px;
+            opacity: 0.6;
+        }
+        .ai-result-card {
+            background: var(--theme-bg-trans-1);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border: 1px solid var(--theme-border);
+        }
+        .ai-result-header {
+            padding: 10px 15px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background-color 0.2s ease;
+        }
+        .ai-result-header:hover {
+            background: var(--theme-bg-trans-2);
+        }
+        .ai-result-header h5 {
+            margin: 0;
+            flex-grow: 1;
+        }
+        .ai-result-details {
+            display: none; /* 預設隱藏 */
+            padding: 15px;
+            border-top: 1px solid var(--theme-border);
+            white-space: pre-wrap; /* 讓換行生效 */
+            line-height: 1.7;
+            font-size: 0.9rem;
+            background: rgba(0,0,0,0.05);
+        }
+        .theme-ocean .ai-result-details, .theme-spring .ai-result-details, .theme-meadow .ai-result-details {
+             background: rgba(0,0,0,0.02);
+        }
         /* --- 響應式設計 --- */
         @media (max-width: 900px) {
             /* (可自行修改) 當寬度小於 900px 時，取消縮放 */
@@ -2502,9 +2894,16 @@
         </div>
 
         <div class="import-section">
-            <h4>📥 匯入資料 (僅限管理員)</h4>
+            <div class="import-header">
+                <h4>📥 匯入</h4>
+                <button class="btn btn-primary btn-ai" onclick="openAiHelperModal()">🤖 AI 辨識</button>
+            </div>
+            <p class="ai-panel-desc" style="text-align: center; margin-top: 5px; margin-bottom: 15px;">(可使用 AI 輔助，或從下方匯入 .json 檔案)</p>
             <input type="file" id="importFile" accept=".json" style="margin-bottom: 10px; width: 100%;">
-            <button class="btn btn-secondary" onclick="importData()" style="width: 100%;">匯入檔案</button>
+            <button class="btn btn-secondary" onclick="importData()" style="width: 100%;">匯入 .json 檔案</button>
+        </div>
+            </div>
+        </div>
         </div>
 
         <!-- (v1.4.0) 移除 "關閉設定" 按鈕 -->
@@ -2539,7 +2938,39 @@
             </div>
         </div>
     </div>
+<div class="modal" id="aiHelperModal">
+        <div class="modal-content ai-modal-content">
+            <div class="modal-header">
+                <h3>🤖 AI 行事曆辨識工具</h3>
+                <button class="close-btn" onclick="closeAiHelperModal()">×</button>
+            </div>
+            <div class="ai-container">
+                <div class="ai-panel ai-input-panel">
+                    <h4>[1] 提供內容</h4>
+                    <p class="ai-panel-desc">請貼上文字、或上傳 .txt 純文字檔。AI 將自動為您解析活動資訊。</p>
+                    <textarea id="aiInputText" placeholder="例如：
+7/10 晚上8點是 Canva 網頁設計教學
+地點在 Youtube 直播
+講師是黃信溢..."></textarea>
+                    <div class="ai-input-actions">
+                        <input type="file" id="aiImportFile" accept=".txt">
+                        <button class="btn btn-primary" onclick="processAiInput()">開始辨識</button>
+                    </div>
+                </div>
 
+                <div class="ai-panel ai-results-panel">
+                    <h4>[2] 辨識結果</h4>
+                    <p class="ai-panel-desc">點擊標題可展開詳細資訊。確認無誤後即可匯入行事曆。</p>
+                    <div class="ai-result-actions">
+                        <button id="importAllAiBtn" class="btn btn-primary" onclick="importAllAiEvents()" style="display: none;">全部匯入</button>
+                    </div>
+                    <div id="aiResultsContainer">
+                        <div class="ai-no-result">尚無辨識結果</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
 </body>
 </html>
