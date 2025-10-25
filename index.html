@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>班級行事曆 v1.8.0 (AI辨識版)</title>
+    <title>雲教室行事曆 v1.0.0</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -1336,7 +1336,8 @@ JSON 結構：
     "date": "YYYY-MM-DD (必須是這個格式！)",
     "time": "HH:MM (24小時制) 或 '全天' (如果沒有具體時間)",
     "location": "地點 (如果有的話)",
-    "description": "詳細內容或備註 (條列式)"
+    "description": "詳細內容或備註 (條列式)",
+    "emoji": "一個最能代表此活動的 emoji (例如：研習用 📚, 運動用 🏃, 慶祝用 🎉)"
   }
 ]
 
@@ -1350,7 +1351,8 @@ JSON 結構：
 3.  **格式化**：
     * 日期「必須」是 YYYY-MM-DD 格式。
     * 時間「必須」是 HH:MM 格式或 "全天"。
-    * 描述 (description) 請使用條列式 (用 \\n 換行) 總結重點。
+    * 描述 (description) 請使用條列式 (用 \n 換行) 總結重點。
+    * Emoji「必須」只提供一個相關的表情符號。
 `;
 
             // (v1.8.1) 組合傳送的 parts (適用於所有多模態模型)
@@ -1414,18 +1416,34 @@ JSON 結構：
                 const cleanJsonText = jsonText.replace(/^```json\s*|```\s*$/g, '');
                 const parsedData = JSON.parse(cleanJsonText);
                 
-                return parsedData.map((item, index) => ({
-                    id: `ai_${Date.now()}_${index}`,
-                    title: item.title,
-                    date: item.date,
-                    time: item.time,
-                    location: item.location || '',
-                    description: item.description || '',
-                    speaker: '',
-                    notes: '',
-                    simplifiedTitle: item.title.length > 15 ? item.title.substring(0, 15) + '…' : item.title,
-                    displayTitle: `[${item.time === '全天' ? '全天' : item.time}] ${item.title}`
-                }));
+                // (v1.0.0) 實作標題簡化邏輯 (規則 4 & 5)
+                return parsedData.map((item, index) => {
+                    // 規則 4：簡化標題 (0-10字)
+                    let simpleTitle = item.title;
+                    if (simpleTitle.length > 10) {
+                        simpleTitle = simpleTitle.substring(0, 10) + '…';
+                    }
+
+                    // 規則 4：組合顯示標題
+                    let displayTitle = simpleTitle;
+                    if (item.time && item.time !== '全天') {
+                        displayTitle = `[${item.time}] ${simpleTitle}`;
+                    }
+
+                    return {
+                        id: `ai_${Date.now()}_${index}`,
+                        title: item.title, // 保留原始完整標題
+                        date: item.date,
+                        time: item.time,
+                        location: item.location || '',
+                        description: item.description || '',
+                        emoji: item.emoji || '💡', // (v1.0.0) 規則 5：使用 AI 的 emoji，預設為 💡
+                        speaker: '', // (保留欄位)
+                        notes: '',   // (保留欄位)
+                        simplifiedTitle: simpleTitle, // (v1.0.0) 10字版
+                        displayTitle: displayTitle    // (v1.0.0) [HH:MM] 10字版
+                    };
+                });
 
             } catch (e) {
                 console.error("解析 AI 回傳的 JSON 失敗:", e);
@@ -1505,19 +1523,25 @@ JSON 結構：
                 card.className = 'ai-result-card';
                 card.id = event.id;
 
-                // 格式化詳細內容
-                let detailsHtml = ``;
-                // (v1.8.0) 使用 AI 回傳的新欄位
-                if(event.date) detailsHtml += `📆 日期: ${event.date} ${event.time}\n\n`;
-                if(event.location) detailsHtml += `📍 地點: ${event.location}\n\n`;
-                if(event.description.trim()) detailsHtml += `💬 備註:\n${event.description.trim()}\n\n`;
+                // (v1.0.0) 格式化詳細內容 (規則 3 & 4)
+                // 這是準備放入 *可編輯* <textarea> 的 *預設值*
+                let detailsText = '';
+                // 規則 4：將完整標題放入詳細資料中
+                detailsText += `📋 完整標題: ${event.title}\n\n`; 
+                if(event.date) detailsText += `📆 日期: ${event.date} ${event.time}\n\n`;
+                if(event.location) detailsText += `📍 地點: ${event.location}\n\n`;
+                if(event.description.trim()) detailsText += `💬 備註:\n${event.description.trim()}\n\n`;
 
+                // (v1.0.0) 規則 3：修改 card.innerHTML 以包含 <textarea>
                 card.innerHTML = `
                     <div class="ai-result-header">
                         <h5>🏷️ ${event.displayTitle}</h5>
                         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 0.8rem;">匯入此項</button>
                     </div>
-                    <div class="ai-result-details">${detailsHtml.trim()}</div>
+                    <div class="ai-result-details">
+                        <p style="font-size: 0.8rem; opacity: 0.7; margin: 0 0 5px 0;">(您可以直接在此欄位修改內容，修改後再按匯入)</p>
+                        <textarea class="ai-result-textarea">${detailsText.trim()}</textarea>
+                    </div>
                 `;
                 
                 // 綁定事件
@@ -1538,35 +1562,50 @@ JSON 結構：
             });
         }
         
-        // 從 AI 結果匯入單一事件 (v1.8.0 移除權限檢查，並更新 newEvent 結構)
+        // (v1.0.0) 從 AI 結果匯入單一事件 (規則 3 & 5)
         async function importEventFromAI(eventData, elementToRemove) {
-            // (v1.8.0) 移除管理員權限檢查
-            // if (!isAdmin) return;
+            
+            // (v1.0.0) 規則 3：從 <textarea> 讀取使用者修改後的內容
+            const textarea = elementToRemove.querySelector('.ai-result-textarea');
+            const modifiedContent = textarea.value.trim();
 
-            // (v1.8.0) 組合 AI 回傳的標準化資料
-            // (可自行修改) 匯入到行事曆的 content 內容
-            let content = '';
-            if (eventData.time && eventData.time !== '全天') {
-                content += `時間: ${eventData.time}\n`;
-            }
-            if (eventData.location) {
-                content += `地點: ${eventData.location}\n`;
-            }
-            if (eventData.description) {
-                content += `備註:\n${eventData.description}`;
-            }
+            // (v1.0.0) 規則 5：使用 eventData 中由 AI 提供的 emoji
+            const smartEmoji = eventData.emoji || '💡'; // (預設 💡)
             
             // 組合要存到 Firebase 的資料
             const newEvent = {
-                title: eventData.title,
-                content: content.trim(),
+                // (v1.0.0) title: 使用 eventData 中的 *原始完整標題*
+                // 使用者若要改標題，可自行在 <textarea> 的 "完整標題" 欄位修改
+                // 但為了簡化，我們這裡先抓 *原始* 標題，內容抓 <textarea>
+                title: eventData.title, 
+                content: modifiedContent, // (v1.0.0) 使用 <textarea> 內的完整內容
                 date: eventData.date,       // AI 回傳的 YYYY-MM-DD
                 startDate: eventData.date,  // AI 辨識預設為單日事件
                 endDate: eventData.date,    // AI 辨識預設為單日事件
                 color: '', // 預設無顏色
-                emoji: '🤖', // (可自行修改) 用機器人表情符號標示為 AI 匯入
+                emoji: smartEmoji, // (v1.0.0) 規則 5：使用 AI 建議的 emoji
                 groupId: generateGroupId() // 產生新的 groupId
             };
+            
+            // (v1.0.0) 為了讓使用者修改標題，我們需要一個更複雜的解析
+            // 簡易版：我們假設 <textarea> 的第一行 "📋 完整標題: " 後面是新標題
+            try {
+                const lines = modifiedContent.split('\n');
+                if (lines[0].startsWith('📋 完整標題:')) {
+                    newEvent.title = lines[0].replace('📋 完整標題:', '').trim();
+                    // (v1.0.0) 內容則為標題行以外的所有行
+                    newEvent.content = lines.slice(1).join('\n').trim();
+                } else {
+                    // 如果格式被破壞，就使用原始標題和完整 textarea 內容
+                    newEvent.title = eventData.title;
+                    newEvent.content = modifiedContent;
+                }
+            } catch (parseError) {
+                // 解析失敗，使用備用方案
+                newEvent.title = eventData.title;
+                newEvent.content = modifiedContent;
+            }
+
 
             try {
                 await addDoc(collection(db, 'public_events'), newEvent);
@@ -2581,6 +2620,12 @@ JSON 結構：
 
 
         /* --- 自訂提示/確認框 --- */
+        /* (v1.0.0) 提高提示框層級，確保在 AI 視窗之上 */
+        #alertModal,
+        #confirmModal {
+            z-index: 1002; 
+        }
+
         #alertModal .modal-content,
         #confirmModal .modal-content { /* (v1.5.0) 確認框共用樣式 */
             max-width: 400px;
@@ -2850,6 +2895,25 @@ JSON 結構：
         .theme-ocean .ai-result-details, .theme-spring .ai-result-details, .theme-meadow .ai-result-details {
              background: rgba(0,0,0,0.02);
         }
+		/* (v1.0.0) AI 結果編輯區樣式 */
+        .ai-result-textarea {
+            width: 100%;
+            height: 150px; /* (可自行修改) AI 結果編輯區預設高度 */
+            box-sizing: border-box;
+            background: rgba(0,0,0,0.1);
+            color: var(--theme-input-text);
+            border: 1px solid var(--theme-border);
+            border-radius: 5px;
+            padding: 10px;
+            font-size: 0.9rem;
+            resize: vertical;
+        }
+        .theme-ocean .ai-result-textarea, 
+        .theme-spring .ai-result-textarea, 
+        .theme-meadow .ai-result-textarea {
+             background: rgba(255,255,255,0.4);
+             color: var(--color-black);
+        }
         /* --- 響應式設計 --- */
         @media (max-width: 900px) {
             /* (可自行修改) 當寬度小於 900px 時，取消縮放 */
@@ -2983,7 +3047,7 @@ JSON 結構：
             <!-- 左側 -->
             <div class="header-left">
                 <!-- (可自行修改) 標題文字 -->
-                <h1 class="calendar-title" id="calendarTitle">📅 班級行事曆</h1>
+                <h1 class="calendar-title" id="calendarTitle">📅 雲教室行事曆</h1>
                 <button class="nav-btn" onclick="goToToday()">📍 今天</button>
             </div>
 
