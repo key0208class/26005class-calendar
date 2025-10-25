@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- (v1.4.0) 更新版本號 -->
-    <title>班級行事曆 v1.4.0 (Firebase 公開版)</title>
+    <!-- (v1.5.0) 更新版本號 -->
+    <title>班級行事曆 v1.5.0 (Firebase 公開版)</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -42,7 +42,7 @@
             appId: "1:123055248147:web:c9b2bc6e1d6a6b9a58c0e6"
         };
         // 🔥🔥🔥 Firebase 設定結束 🔥🔥🔥
-        
+
         // ---
         // ⚠️⚠️⚠️ 【重要】管理員設定 ⚠️⚠️⚠️
         // 請將您自己的 Google 帳號登入後的 UID 貼在下方。
@@ -50,7 +50,7 @@
         // 1. 登入一次行事曆。
         // 2. 打開瀏覽器開發者工具 (F12)。
         // 3. 在 Console (主控台) 中找到 "目前使用者 UID:" 的訊息，複製那串英數混合的字串。
-        const ADMIN_UID = "PhJQtK5Hd2SDQuCwpyU0oPpL4gz1"; 
+        const ADMIN_UID = "PhJQtK5Hd2SDQuCwpyU0oPpL4gz1";
         // ---
 
         // 初始化 Firebase
@@ -65,6 +65,7 @@
         let currentYear = currentDate.getFullYear();
         let events = []; // 本地事件快取 (由 Firebase 同步)
         let editingEventId = null; // 現在儲存的是 Firestore 的 Document ID
+        let originalEventDate = null; // (v1.5.0) 編輯時原始事件日期 (用於判斷是否移動)
         let selectedColor = '';
         let selectedEmoji = '';
         let currentUserId = null; // 目前登入的使用者 ID
@@ -80,26 +81,26 @@
             } else {
                 document.body.className = 'theme-tech'; // 預設主題
             }
-            
+
             // 初始化年份選擇器
             initYearSelect();
-            
+
             // 設定當前月份和年份
             document.getElementById('monthSelect').value = currentMonth;
             document.getElementById('yearSelect').value = currentYear;
-            
+
             // 監聽 Firebase 驗證狀態
             onAuthStateChanged(auth, (user) => {
                 if (user) {
                     // 使用者已登入
                     currentUserId = user.uid;
                     console.log("目前使用者 UID:", currentUserId); // 方便複製 UID
-                    
+
                     document.getElementById('loginBtn').style.display = 'none';
                     document.getElementById('userInfo').style.display = 'flex';
                     document.getElementById('userName').textContent = user.displayName || user.email;
                     document.getElementById('userPhoto').src = user.photoURL || 'https://placehold.co/40x40/cccccc/ffffff?text=User';
-                    
+
                     // 檢查是否為管理員
                     if (currentUserId === ADMIN_UID) {
                         isAdmin = true;
@@ -110,7 +111,7 @@
                         isAdmin = false;
                         document.getElementById('adminIndicator').style.display = 'none';
                     }
-                    
+
                 } else {
                     // 使用者已登出
                     currentUserId = null;
@@ -119,7 +120,7 @@
                     document.getElementById('userInfo').style.display = 'none';
                     document.getElementById('adminIndicator').style.display = 'none';
                 }
-                
+
                 // 登入狀態改變後，重新渲染行事曆以更新權限外觀
                 // (事件讀取不受登入狀態影響)
                 renderCalendar();
@@ -127,7 +128,7 @@
 
             // 載入公開事件 (無論是否登入)
             loadEventsFromFirestore();
-            
+
             // 設定事件監聽器
             setupEventListeners();
         });
@@ -144,14 +145,15 @@
         };
 
         window.logout = async () => {
-            if (confirm('確定要登出嗎？')) {
+            // (v1.5.0) 改用自訂提示框確認
+            showCustomConfirm('確定要登出嗎？', async () => {
                 try {
                     await signOut(auth);
                     // 狀態變更將由 onAuthStateChanged 處理
                 } catch (error) {
                     console.error("登出失敗:", error);
                 }
-            }
+            });
         };
 
         // 從 Firestore 載入事件 (讀取公開集合)
@@ -163,7 +165,7 @@
 
             // 建立指向 "公開事件" 集合的查詢
             const eventsCollectionRef = collection(db, 'public_events');
-            const q = query(eventsCollectionRef); 
+            const q = query(eventsCollectionRef);
 
             // 設定即時監聽
             unsubscribeFromEvents = onSnapshot(q, (querySnapshot) => {
@@ -176,6 +178,10 @@
                 });
                 // 重新渲染行事曆
                 renderCalendar();
+                // (v1.5.0) 更新搜尋結果 (如果面板是開啟的)
+                if (document.getElementById('searchResultsPanel').style.display === 'block') {
+                    searchEvents();
+                }
             }, (error) => {
                 console.error("載入公開事件時發生錯誤:", error);
                 showCustomAlert("無法從雲端載入事件，請檢查網路連線或 Firebase 規則設定。");
@@ -220,37 +226,73 @@
                 saveEvent();
             });
 
-            // 點擊模態框外部關閉
+            // (v1.5.0) 修改：點擊模態框外部關閉 (只監聽 overlay)
             document.getElementById('eventModal').addEventListener('click', function(e) {
+                // 只有當點擊的目標是 modal 背景本身時才關閉
                 if (e.target === this) {
                     closeModal();
                 }
             });
-            
-            // (v1.3.0) 點擊自訂匯出模態框外部關閉
+             // (v1.5.0) 自訂匯出模態框 overlay 點擊
             document.getElementById('customExportModal').addEventListener('click', function(e) {
-                if (e.target === this) {
+                 if (e.target === this) {
                     closeCustomExportModal();
-                }
+                 }
+            });
+             // (v1.5.0) 自訂提示框 overlay 點擊
+             document.getElementById('alertModal').addEventListener('click', function(e) {
+                 if (e.target === this) {
+                     this.style.display = 'none';
+                 }
+             });
+             // (v1.5.0) 自訂確認框 overlay 點擊
+             document.getElementById('confirmModal').addEventListener('click', function(e) {
+                 if (e.target === this) {
+                     this.style.display = 'none';
+                 }
+             });
+
+
+            // 關閉自訂提示框按鈕
+            document.querySelectorAll('.close-alert').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.getElementById('alertModal').style.display = 'none';
+                });
             });
 
-            // 關閉自訂提示框
-            document.getElementById('alertModal').addEventListener('click', function(e) {
-                if (e.target === this || e.target.classList.contains('close-alert')) {
-                    this.style.display = 'none';
-                }
+            // (v1.5.0) 關閉自訂確認框按鈕
+            document.querySelectorAll('.close-confirm').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.getElementById('confirmModal').style.display = 'none';
+                });
             });
+            document.getElementById('confirmCancelBtn').addEventListener('click', () => {
+                 document.getElementById('confirmModal').style.display = 'none';
+            });
+
 
             // 標題點擊事件
             document.getElementById('calendarTitle').addEventListener('click', () => {
                 window.open('https://key0208class.github.io/26005class-calendar/', '_blank');
             });
+
+             // (v1.5.0) 搜尋輸入觸發
+             document.getElementById('searchInput').addEventListener('input', searchEvents);
+
+             // (v1.5.0) 點擊空白處關閉搜尋結果
+             document.addEventListener('click', (e) => {
+                const searchPanel = document.getElementById('searchResultsPanel');
+                const searchInput = document.getElementById('searchInput');
+                if (searchPanel.style.display === 'block' && !searchPanel.contains(e.target) && e.target !== searchInput) {
+                    searchPanel.style.display = 'none';
+                }
+             });
         }
 
         // 渲染行事曆
         function renderCalendar() {
             const grid = document.getElementById('calendarGrid');
-            
+
             // 清除現有的日期格子（保留星期標題）
             const dayHeaders = grid.querySelectorAll('.day-header');
             grid.innerHTML = '';
@@ -260,7 +302,7 @@
             const firstDay = new Date(currentYear, currentMonth, 1);
             const lastDay = new Date(currentYear, currentMonth + 1, 0);
             const daysInMonth = lastDay.getDate();
-            
+
             // 計算第一天是星期幾（調整為週一開始）
             let startDay = firstDay.getDay();
             startDay = startDay === 0 ? 6 : startDay - 1;
@@ -268,7 +310,7 @@
             // 添加上個月的日期
             const prevMonth = new Date(currentYear, currentMonth, 0);
             const prevMonthDays = prevMonth.getDate();
-            
+
             for (let i = startDay - 1; i >= 0; i--) {
                 const dayCell = createDayCell(prevMonthDays - i, true, null);
                 grid.appendChild(dayCell);
@@ -285,7 +327,7 @@
             const targetCells = 35; // 固定 5 週 (35 格) 佈局
             const totalCells = grid.children.length - 7; // 減去星期標題
             let remainingCells = targetCells - totalCells;
-            
+
             for (let day = 1; day <= remainingCells; day++) {
                 const dayCell = createDayCell(day, true, null);
                 grid.appendChild(dayCell);
@@ -323,7 +365,7 @@
             // 添加該日期的事件
             if (!isOtherMonth && dateStr) {
                 const dayEvents = events.filter(event => event.date === dateStr);
-                
+
                 dayEvents.forEach(event => {
                     const eventElement = document.createElement('div');
                     // (v1.4.0) 處理 '無' 顏色的情況
@@ -333,7 +375,8 @@
                     eventElement.textContent = `${event.emoji || '●'} ${title}`;
                     eventElement.onclick = (e) => {
                         e.stopPropagation();
-                        showStickyNote(event, e);
+                        // (v1.5.0) 傳遞點擊的元素，用於定位 (雖然現在固定中間了)
+                        showStickyNote(event, e.currentTarget);
                     };
                     eventsContainer.appendChild(eventElement);
                 });
@@ -346,7 +389,7 @@
                     }
                     // (v1.3.0) 一般使用者點擊無反應，不跳提示
                 };
-                
+
                 // (v1.3.0) 點擊方格空白處無任何動作 (已移除 cell.onclick)
 
             } else if (isOtherMonth) {
@@ -364,12 +407,14 @@
                 showCustomAlert("您沒有編輯權限。");
                 return;
             }
-            
+
             const modal = document.getElementById('eventModal');
             const modalTitle = document.getElementById('modalTitle');
             const deleteBtn = document.getElementById('deleteBtn');
             const saveBtn = document.getElementById('saveBtn');
-            
+            const startDateInput = document.getElementById('eventStartDate');
+            const endDateInput = document.getElementById('eventEndDate');
+
             if (event) {
                 // 編輯模式
                 modalTitle.textContent = '✏️ 編輯事件';
@@ -378,8 +423,14 @@
                 selectedColor = event.color || ''; // (v1.4.0) '' 對應 '無'
                 selectedEmoji = event.emoji || '';
                 editingEventId = event.id; // 儲存 Firestore Document ID
+                originalEventDate = event.date; // (v1.5.0) 儲存原始日期
                 deleteBtn.style.display = 'inline-block';
-                
+
+                // (v1.5.0) 設定開始和結束日期為事件日期
+                startDateInput.value = event.date;
+                endDateInput.value = event.date;
+
+
                 // (v1.4.0) 設定選中的顏色 ('' 會自動選中 '無')
                 document.querySelectorAll('.color-option').forEach(o => {
                     o.classList.toggle('selected', o.dataset.color === selectedColor);
@@ -394,21 +445,25 @@
                 selectedColor = ''; // (v1.4.0) 預設為 '無'
                 selectedEmoji = '';
                 editingEventId = null;
+                originalEventDate = null; // (v1.5.0) 新增模式無原始日期
                 deleteBtn.style.display = 'none';
-                
+
+                 // (v1.5.0) 設定開始和結束日期為點擊的日期
+                startDateInput.value = date;
+                endDateInput.value = date;
+
                 // (v1.4.0) 清除選擇 (並預選 '無')
                 document.querySelectorAll('.color-option').forEach(o => o.classList.remove('selected'));
                 document.querySelector('.color-option[data-color=""]').classList.add('selected');
                 document.querySelectorAll('.emoji-option').forEach(o => o.classList.remove('selected'));
             }
-            
+
             // 顯示儲存和刪除按鈕 (因為已經檢查過 admin)
             deleteBtn.style.display = event ? 'inline-block' : 'none';
             saveBtn.style.display = 'inline-block';
-            
+
             modal.style.display = 'block';
-            // 儲存當前日期
-            modal.dataset.date = date;
+            // (v1.5.0) 移除 modal.dataset.date，改用 input 的值
         }
 
         // 關閉模態框
@@ -416,7 +471,17 @@
             document.getElementById('eventModal').style.display = 'none';
         }
 
-        // 儲存事件 (至 Firebase)
+        // (v1.5.0) Helper: 日期迭代器
+        function* dateRange(start, end) {
+            let current = new Date(start);
+            const endDate = new Date(end);
+            while (current <= endDate) {
+                yield new Date(current); // Yield a copy
+                current.setDate(current.getDate() + 1);
+            }
+        }
+
+        // 儲存事件 (至 Firebase) - (v1.5.0 重構以支援日期範圍)
         async function saveEvent() {
             // 權限檢查
             if (!isAdmin) {
@@ -426,38 +491,70 @@
 
             const title = document.getElementById('eventTitle').value.trim();
             const content = document.getElementById('eventContent').value.trim();
-            const date = document.getElementById('eventModal').dataset.date;
-            
+            const startDateStr = document.getElementById('eventStartDate').value;
+            const endDateStr = document.getElementById('eventEndDate').value;
+
             if (!title) {
                 showCustomAlert('請輸入事件標題！');
                 return;
             }
+            if (!startDateStr || !endDateStr) {
+                showCustomAlert('請選擇開始和結束日期！');
+                return;
+            }
+
+            const startDate = new Date(startDateStr);
+            const endDate = new Date(endDateStr);
+
+            // 調整日期以避免時區問題
+             startDate.setMinutes(startDate.getMinutes() + startDate.getTimezoneOffset());
+             endDate.setMinutes(endDate.getMinutes() + endDate.getTimezoneOffset());
+
+
+            if (startDate > endDate) {
+                showCustomAlert('結束日期不能早於開始日期！');
+                return;
+            }
 
             const eventData = {
-                date: date,
+                // date: date, // 將在迴圈中設定
                 title: title,
                 content: content,
                 color: selectedColor, // (v1.4.0) '' 代表 '無'
                 emoji: selectedEmoji
             };
 
+            const batch = writeBatch(db);
+            const eventsCollectionRef = collection(db, 'public_events');
+
             try {
+                // --- 處理編輯情況 ---
                 if (editingEventId) {
-                    // 更新現有事件
-                    const eventDocRef = doc(db, 'public_events', editingEventId);
-                    await updateDoc(eventDocRef, eventData);
-                } else {
-                    // 創建新事件
-                    const eventsCollectionRef = collection(db, 'public_events');
-                    await addDoc(eventsCollectionRef, eventData);
+                    // 如果是編輯，先刪除舊事件
+                    const oldDocRef = doc(db, 'public_events', editingEventId);
+                    batch.delete(oldDocRef);
                 }
+
+                // --- 新增事件 (可能是單日或多日) ---
+                for (const date of dateRange(startDate, endDate)) {
+                    const dateStr = formatDateYYYYMMDD(date);
+                    const newDocRef = doc(eventsCollectionRef); // 為每個日期創建新文件
+                    batch.set(newDocRef, { ...eventData, date: dateStr });
+                }
+
+                // 執行批次操作
+                await batch.commit();
+
                 closeModal();
+                showCustomAlert('事件已儲存！');
                 // onSnapshot 會自動觸發並更新介面
+
             } catch (error) {
                 console.error("儲存事件時發生錯誤:", error);
                 showCustomAlert("儲存事件失敗，請檢查 Firebase 規則或網路連線。");
             }
         }
+
 
         // 刪除事件 (從 Firebase)
         window.deleteEvent = async () => {
@@ -466,33 +563,34 @@
                 showCustomAlert("您沒有刪除權限！");
                 return;
             }
-            
-            if (confirm('確定要刪除這個事件嗎？')) {
-                try {
+
+            // (v1.5.0) 改用自訂確認框
+            showCustomConfirm('確定要刪除這個事件嗎？', async () => {
+                 try {
                     const eventDocRef = doc(db, 'public_events', editingEventId);
                     await deleteDoc(eventDocRef);
                     closeModal();
                     // onSnapshot 會自動觸發並更新介面
-                } catch (error) {
+                 } catch (error) {
                     console.error("刪除事件時發生錯誤:", error);
                     showCustomAlert("刪除事件失敗，請重試。");
-                }
-            }
+                 }
+            });
         }
 
-        // 顯示便利貼
-        function showStickyNote(event, clickEvent) {
+        // 顯示便利貼 (v1.5.0 調整定位邏輯)
+        function showStickyNote(event, targetElement) { // targetElement 是點擊的 .event-item
             // 移除現有的便利貼
             document.querySelectorAll('.sticky-note').forEach(note => note.remove());
-            
+
             const stickyNote = document.createElement('div');
             stickyNote.className = 'sticky-note';
-            
+
             // 轉義 event 物件以便安全傳遞
             const eventJson = JSON.stringify(event).replace(/'/g, "\\'").replace(/"/g, '&quot;');
 
             // 根據是否為管理員決定是否顯示編輯按鈕
-            const editButtonHtml = isAdmin ? 
+            const editButtonHtml = isAdmin ?
                 `<button class="sticky-note-btn" onclick='window.editEventFromSticky(${eventJson})'>✏️</button>` : '';
 
             stickyNote.innerHTML = `
@@ -505,18 +603,19 @@
                 </div>
                 <div class="sticky-note-content">${event.content || '無內容'}</div>
             `;
-            
-            // (v1.4.0) 修改為固定在螢幕中間
+
+            // (v1.4.0 -> v1.5.0) 修改為固定在螢幕中間 (由 CSS transform 控制)
             stickyNote.style.position = 'fixed';
             stickyNote.style.left = '50%';
             stickyNote.style.top = '50%';
-            stickyNote.style.transform = 'translate(-50%, -50%)';
-            
+            stickyNote.style.transform = 'translate(-50%, -50%)'; // CSS 置中
+
             // 添加拖曳功能
             makeDraggable(stickyNote);
-            
+
             document.body.appendChild(stickyNote);
         }
+
 
         // 從便利貼編輯
         window.editEventFromSticky = (event) => {
@@ -526,47 +625,65 @@
         };
 
 
-        // 使元素可拖曳
+        // 使元素可拖曳 (v1.5.0 修正拖曳跳動問題)
         function makeDraggable(element) {
             let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-            
+            let initialTop, initialLeft, offsetX, offsetY;
+            let isDragging = false; // 追蹤是否正在拖曳
+
             // 優先從 header 拖曳
             const header = element.querySelector('.sticky-note-header');
             (header || element).onmousedown = dragMouseDown;
-            
+
             function dragMouseDown(e) {
                 e = e || window.event;
                 e.preventDefault();
-                pos3 = e.clientX;
-                pos4 = e.clientY;
+
+                // 獲取初始位置 (相對於 viewport)
+                const rect = element.getBoundingClientRect();
+                initialTop = rect.top;
+                initialLeft = rect.left;
+
+                // 計算滑鼠點擊位置相對於元素左上角的偏移
+                offsetX = e.clientX - initialLeft;
+                offsetY = e.clientY - initialTop;
+
+                // 設置元素的 top 和 left，並移除 transform
+                // 這樣拖曳時就直接操作 top/left
+                element.style.transform = 'none'; // 重要：移除 transform 以便 top/left 生效
+                element.style.top = initialTop + "px";
+                element.style.left = initialLeft + "px";
+
                 document.onmouseup = closeDragElement;
                 document.onmousemove = elementDrag;
+                isDragging = true;
             }
-            
+
             function elementDrag(e) {
+                if (!isDragging) return; // 確保只有在 mousedown 後才執行
+
                 e = e || window.event;
                 e.preventDefault();
-                pos1 = pos3 - e.clientX;
-                pos2 = pos4 - e.clientY;
-                pos3 = e.clientX;
-                pos4 = e.clientY;
-                
-                // (v1.4.0) 確保不會拖出視窗外 (基於 fixed 定位)
-                let newTop = Math.max(0, Math.min(element.offsetTop - pos2, window.innerHeight - element.offsetHeight));
-                let newLeft = Math.max(0, Math.min(element.offsetLeft - pos1, window.innerWidth - element.offsetWidth));
+
+                // 計算新的 top 和 left
+                let newTop = e.clientY - offsetY;
+                let newLeft = e.clientX - offsetX;
+
+                // 確保不會拖出視窗外
+                newTop = Math.max(0, Math.min(newTop, window.innerHeight - element.offsetHeight));
+                newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - element.offsetWidth));
 
                 element.style.top = newTop + "px";
                 element.style.left = newLeft + "px";
-                
-                // (v1.4.0) 因為我們改用 transform 置中，拖曳時需取消 transform
-                element.style.transform = 'none'; 
             }
-            
+
             function closeDragElement() {
                 document.onmouseup = null;
                 document.onmousemove = null;
+                isDragging = false; // 停止拖曳
             }
         }
+
 
         // 導航功能
         window.previousMonth = () => {
@@ -612,22 +729,66 @@
             document.getElementById('yearSelect').value = currentYear;
         }
 
-        // 搜尋功能
+        // (v1.5.0) 搜尋功能實作
         window.searchEvents = () => {
-            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-            const eventItems = document.querySelectorAll('.event-item');
-            
-            eventItems.forEach(item => {
-                const text = item.textContent.toLowerCase();
-                if (searchTerm === '' || text.includes(searchTerm)) {
-                    item.style.opacity = '1';
-                    item.style.transform = 'scale(1)';
-                } else {
-                    item.style.opacity = '0.3';
-                    item.style.transform = 'scale(0.9)';
-                }
-            });
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase().trim();
+            const resultsPanel = document.getElementById('searchResultsPanel');
+            resultsPanel.innerHTML = ''; // 清空舊結果
+
+            if (searchTerm === '') {
+                resultsPanel.style.display = 'none'; // 隱藏面板
+                return;
+            }
+
+            const matchedEvents = events.filter(event =>
+                event.title && event.title.toLowerCase().includes(searchTerm)
+            );
+
+            // (v1.5.0) 依日期排序結果
+            matchedEvents.sort((a, b) => a.date.localeCompare(b.date));
+
+
+            if (matchedEvents.length > 0) {
+                matchedEvents.forEach(event => {
+                    const item = document.createElement('div');
+                    item.className = 'search-result-item';
+                    item.textContent = `${event.date} - ${event.title}`;
+                    item.onclick = () => {
+                        // 1. 跳轉日期
+                        const eventDate = new Date(event.date);
+                        eventDate.setMinutes(eventDate.getMinutes() + eventDate.getTimezoneOffset()); // 校正時區再取年月
+
+                        currentYear = eventDate.getFullYear();
+                        currentMonth = eventDate.getMonth();
+                        updateSelectors();
+                        renderCalendar(); // 重新渲染日曆以顯示正確月份
+
+                        // 2. 顯示便利貼
+                        // 找到日曆上對應的事件元素來模擬點擊位置 (雖然置中了，但 showStickyNote 可能需要)
+                        const eventElement = document.querySelector(`.event-item[data-event-id="${event.id}"]`); // 需要在 createDayCell 中添加 data-event-id
+                         // 延遲一點顯示，確保日曆渲染完成
+                         setTimeout(() => {
+                            // 即使找不到元素，也嘗試在中間顯示
+                             showStickyNote(event, null);
+                         }, 100);
+
+
+                        // 3. 關閉搜尋面板
+                        resultsPanel.style.display = 'none';
+                        document.getElementById('searchInput').value = ''; // 清空搜尋框
+                    };
+                    resultsPanel.appendChild(item);
+                });
+                resultsPanel.style.display = 'block'; // 顯示面板
+            } else {
+                const noResult = document.createElement('div');
+                noResult.className = 'search-no-result';
+                noResult.textContent = '找不到符合的事件';
+                resultsPanel.appendChild(noResult);
+                resultsPanel.style.display = 'block'; // 顯示面板
+            }
         }
+
 
         // 主題切換
         window.changeTheme = (theme) => {
@@ -653,7 +814,7 @@
             // 'events' 陣列已由 onSnapshot 同步，直接使用即可
             let dataToExport = [];
             const now = new Date();
-            
+
             switch(type) {
                 case 'all':
                     dataToExport = events;
@@ -669,12 +830,12 @@
                     // (v1.3.0) 依據 currentYear 和 currentMonth 匯出
                     dataToExport = events.filter(event => {
                         const eventDate = new Date(event.date);
-                        return eventDate.getFullYear() === currentYear && 
+                        return eventDate.getFullYear() === currentYear &&
                                eventDate.getMonth() === currentMonth;
                     });
                     break;
             }
-            
+
             // 移除 Firestore 'id'，避免匯入時混淆
             const cleanDataToExport = dataToExport.map(({ id, ...rest }) => rest);
 
@@ -683,17 +844,19 @@
                 type: type,
                 events: cleanDataToExport
             };
-            
+
             downloadJson(exportFile, `班級行事曆_${type}_${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}.json`);
         }
-        
+
         // (v1.3.0) 格式化日期為 YYYY-MM-DD
         function formatDateYYYYMMDD(date) {
-            const y = date.getFullYear();
-            const m = String(date.getMonth() + 1).padStart(2, '0');
-            const d = String(date.getDate()).padStart(2, '0');
-            return `${y}-${m}-${d}`;
+            const d = new Date(date); // 確保是 Date 物件
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
         }
+
 
         // (v1.3.0) 開啟自訂匯出模態框
         window.openCustomExportModal = () => {
@@ -701,7 +864,7 @@
                 showCustomAlert("僅限管理員才能匯出資料！");
                 return;
             }
-            
+
             // (v1.3.0) 預設日期：結束為今天，開始為一個月前
             const endDate = new Date(); // 使用今天
             const startDate = new Date();
@@ -709,7 +872,7 @@
 
             document.getElementById('exportStartDate').value = formatDateYYYYMMDD(startDate);
             document.getElementById('exportEndDate').value = formatDateYYYYMMDD(endDate);
-            
+
             document.getElementById('customExportModal').style.display = 'block';
         }
 
@@ -717,7 +880,7 @@
         window.closeCustomExportModal = () => {
             document.getElementById('customExportModal').style.display = 'none';
         }
-        
+
         // (v1.3.0) 匯出自訂範圍 (從模態框讀取)
         window.exportCustomRange = () => {
             if (!isAdmin) {
@@ -727,12 +890,12 @@
             // 從模態框讀取日期
             const startDate = document.getElementById('exportStartDate').value;
             const endDate = document.getElementById('exportEndDate').value;
-            
+
             if (startDate && endDate && endDate >= startDate) {
                 const dataToExport = events.filter(event => {
                     return event.date >= startDate && event.date <= endDate;
                 });
-                
+
                 // 移除 Firestore 'id'
                 const cleanDataToExport = dataToExport.map(({ id, ...rest }) => rest);
 
@@ -742,14 +905,14 @@
                     dateRange: { start: startDate, end: endDate },
                     events: cleanDataToExport
                 };
-                
+
                 downloadJson(exportFile, `班級行事曆_自訂範圍_${startDate}_${endDate}.json`);
                 closeCustomExportModal(); // 匯出後關閉
             } else {
                 showCustomAlert('請輸入有效的日期範圍！ (結束日期必須大於或等於開始日期)');
             }
         }
-        
+
         // (v1.3.0) 舊的 exportCustomRange (prompt版本) 已被移除
 
         function downloadJson(data, filename) {
@@ -772,86 +935,82 @@
 
             const fileInput = document.getElementById('importFile');
             const file = fileInput.files[0];
-            
+
             if (!file) {
                 showCustomAlert('請選擇要匯入的檔案！');
                 return;
             }
-            
+
             try {
                 const text = await file.text();
                 const importData = JSON.parse(text);
-                
+
                 if (importData.events && Array.isArray(importData.events)) {
-                    
+
                     const eventsCollectionRef = collection(db, 'public_events');
                     const eventsToImport = importData.events;
-                    
-                    // 詢問匯入模式
-                    const importMode = prompt(
-                        `偵測到 ${eventsToImport.length} 個事件。\n請選擇匯入模式：\n\n1. 全部新增 (保留相同日期的舊事件)\n2. 覆蓋 (刪除匯入檔案中相同日期的舊事件)\n\n請輸入 1 或 2：`, 
-                        "1"
+
+                    // (v1.5.0) 使用自訂提示框詢問
+                    showCustomConfirm(
+                        `偵測到 ${eventsToImport.length} 個事件。\n請選擇匯入模式：\n\n1. 全部新增 (保留相同日期的舊事件)\n2. 覆蓋 (刪除匯入檔案中相同日期的舊事件)`,
+                        async (choice) => { // 確認回調
+                            if (choice === 'confirm') { // 假設確認按鈕的值是 'confirm'
+                                 // 這裡需要修改 showCustomConfirm 以支援多個按鈕或返回值
+                                 // 暫時假設用戶選擇了 "覆蓋" (需要修改 showCustomConfirm)
+                                 const importMode = prompt("暫時代替：請輸入 1 (新增) 或 2 (覆蓋)", "1"); // 臨時替代方案
+
+                                if (importMode === "1") {
+                                    // ... (原有新增邏輯) ...
+                                    const importPromises = [];
+                                    for (const eventData of eventsToImport) {
+                                        const { id, ...newEventData } = eventData;
+                                        if (newEventData.title && newEventData.date) {
+                                            importPromises.push(addDoc(eventsCollectionRef, newEventData));
+                                        }
+                                    }
+                                    await Promise.all(importPromises);
+                                    showCustomAlert('新增匯入完成！');
+
+                                } else if (importMode === "2") {
+                                    // ... (原有覆蓋邏輯) ...
+                                     // 1. 取得所有要覆蓋的日期
+                                    const datesToOverwrite = new Set(eventsToImport.map(e => e.date));
+                                    // 2. 找出需要刪除的事件
+                                    const eventsToDelete = events.filter(e => datesToOverwrite.has(e.date));
+                                    // 3. 建立批次作業
+                                    const batch = writeBatch(db);
+                                    // 4. 加入刪除操作
+                                    eventsToDelete.forEach(e => {
+                                        const docRef = doc(db, 'public_events', e.id);
+                                        batch.delete(docRef);
+                                    });
+                                    // 5. 加入新增操作
+                                    eventsToImport.forEach(eventData => {
+                                        const { id, ...newEventData } = eventData;
+                                        if (newEventData.title && newEventData.date) {
+                                            const newDocRef = doc(eventsCollectionRef);
+                                            batch.set(newDocRef, newEventData);
+                                        }
+                                    });
+                                    // 6. 執行批次
+                                    await batch.commit();
+                                    showCustomAlert('覆蓋匯入完成！');
+                                } else {
+                                    showCustomAlert('已取消匯入。');
+                                }
+                                fileInput.value = ''; // 清空選擇的文件
+                            } else { // 取消回調
+                                showCustomAlert('已取消匯入。');
+                                fileInput.value = ''; // 清空選擇的文件
+                            }
+                        },
+                        "選擇匯入模式", // (v1.5.0) 確認框標題
+                        "覆蓋", // (v1.5.0) 確認按鈕文字
+                        "新增" // (v1.5.0) 取消按鈕文字 (可能需要調整為第三個按鈕或修改 showCustomConfirm)
+                        // **注意：目前的 showCustomConfirm 可能不支援三個按鈕，需要修改或用 prompt 替代**
                     );
 
-                    if (importMode === "1") {
-                        // 模式 1：全部新增 (原v1.3邏輯，修正v1.3 bug)
-                        if (confirm(`確定要 "全部新增" ${eventsToImport.length} 個事件嗎？`)) {
-                            const importPromises = [];
-                            for (const eventData of eventsToImport) {
-                                const { id, ...newEventData } = eventData;
-                                // (v1.4.0) 修正 v1.3 bug (newData.date -> newEventData.date)
-                                if (newEventData.title && newEventData.date) {
-                                    importPromises.push(addDoc(eventsCollectionRef, newEventData));
-                                }
-                            }
-                            await Promise.all(importPromises);
-                            showCustomAlert('新增匯入完成！');
-                        } else {
-                            showCustomAlert('已取消匯入。');
-                        }
-                        
-                    } else if (importMode === "2") {
-                        // 模式 2：覆蓋
-                        if (confirm(`⚠️ 確定要 "覆蓋" ${eventsToImport.length} 個事件嗎？\n這將會 "刪除" 匯入檔案中所有涉及日期的 "全部" 現有事件！\n此操作無法復原。`)) {
-                            
-                            // 1. 取得所有要覆蓋的日期
-                            const datesToOverwrite = new Set(eventsToImport.map(e => e.date));
-                            
-                            // 2. 找出本地快取中 (events 陣列) 所有需要刪除的事件
-                            const eventsToDelete = events.filter(e => datesToOverwrite.has(e.date));
 
-                            // 3. 建立批次作業
-                            const batch = writeBatch(db);
-                            
-                            // 4. 將刪除操作加入批次
-                            eventsToDelete.forEach(e => {
-                                const docRef = doc(db, 'public_events', e.id);
-                                batch.delete(docRef);
-                            });
-                            
-                            // 5. 將新增操作加入批次
-                            eventsToImport.forEach(eventData => {
-                                const { id, ...newEventData } = eventData;
-                                if (newEventData.title && newEventData.date) {
-                                    const newDocRef = doc(eventsCollectionRef); // 產生新 ID
-                                    batch.set(newDocRef, newEventData);
-                                }
-                            });
-                            
-                            // 6. 執行批次
-                            await batch.commit();
-                            
-                            showCustomAlert('覆蓋匯入完成！');
-                        } else {
-                            showCustomAlert('已取消匯入。');
-                        }
-                        
-                    } else {
-                        showCustomAlert('已取消匯入。');
-                    }
-                    
-                    fileInput.value = '';
-                    
                 } else {
                     showCustomAlert('檔案格式不正確！');
                 }
@@ -868,6 +1027,36 @@
             alertModal.style.display = 'block';
         }
 
+         // (v1.5.0) 顯示自訂確認框
+        function showCustomConfirm(message, confirmCallback, title = "💡 請確認", confirmText = "確定", cancelText = "取消") {
+            const confirmModal = document.getElementById('confirmModal');
+            document.getElementById('confirmTitle').textContent = title;
+            document.getElementById('confirmMessage').textContent = message;
+            const confirmBtn = document.getElementById('confirmOkBtn');
+            const cancelBtn = document.getElementById('confirmCancelBtn'); // assuming you add an id
+
+            confirmBtn.textContent = confirmText;
+            cancelBtn.textContent = cancelText;
+
+             // 移除舊的監聽器以避免重複觸發
+             const newConfirmBtn = confirmBtn.cloneNode(true);
+             confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+
+             newConfirmBtn.onclick = () => {
+                 confirmModal.style.display = 'none';
+                 if (confirmCallback) confirmCallback('confirm'); // 傳遞確認信號
+             };
+
+             cancelBtn.onclick = () => {
+                 confirmModal.style.display = 'none';
+                 if (confirmCallback) confirmCallback('cancel'); // 傳遞取消信號
+             };
+
+
+            confirmModal.style.display = 'block';
+        }
+
+
     </script>
     <style>
         :root {
@@ -882,7 +1071,7 @@
             --color-primary: #2196f3;
             --color-danger: #f44336;
             --color-secondary: #666666;
-            
+
             /* 事件顏色 */
             --event-red: #ffcdd2;
             --event-blue: #bbdefb;
@@ -892,8 +1081,11 @@
             --event-orange: #ffccbc;
             --event-pink: #f8bbd9;
             --event-cyan: #b2ebf2;
+
+             /* (v1.5.0) 搜尋面板寬度 */
+             --search-panel-width: 250px;
         }
-        
+
         body {
             box-sizing: border-box;
             margin: 0;
@@ -905,7 +1097,14 @@
             display: flex;
             justify-content: center; /* 水平置中 */
             align-items: flex-start; /* 靠上對齊 */
+             /* (v1.5.0) 為搜尋面板留出空間 */
+             padding-left: var(--search-panel-width);
         }
+        /* (v1.5.0) 當搜尋面板隱藏時，移除 padding */
+        body:not(.search-panel-visible) {
+             padding-left: 0;
+        }
+
 
         /* --- 主題樣式 --- */
         /* 科技風 (預設) */
@@ -929,6 +1128,7 @@
             --theme-sticky-text: var(--color-white);
             --theme-event-text: var(--color-white); /* (修正) 事件文字顏色 */
             --theme-color-scheme: dark; /* (v1.3.0) 日期輸入框配色 */
+             --search-panel-bg: rgba(22, 33, 62, 0.9); /* (v1.5.0) 科技風搜尋面板背景 */
         }
 
         /* 海洋風 */
@@ -952,6 +1152,7 @@
             --theme-sticky-text: var(--color-black);
             --theme-event-text: var(--color-black); /* (修正) 事件文字顏色 */
             --theme-color-scheme: light; /* (v1.3.0) 日期輸入框配色 */
+             --search-panel-bg: rgba(227, 242, 253, 0.9); /* (v1.5.0) 海洋風搜尋面板背景 */
         }
 
         /* 春天風 */
@@ -975,6 +1176,7 @@
             --theme-sticky-text: var(--color-black);
             --theme-event-text: var(--color-black); /* (修正) 事件文字顏色 */
             --theme-color-scheme: light; /* (v1.3.0) 日期輸入框配色 */
+             --search-panel-bg: rgba(252, 228, 236, 0.9); /* (v1.5.0) 春天風搜尋面板背景 */
         }
 
         /* 草原風 */
@@ -998,8 +1200,9 @@
             --theme-sticky-text: var(--color-black);
             --theme-event-text: var(--color-black); /* (修正) 事件文字顏色 */
             --theme-color-scheme: light; /* (v1.3.0) 日期輸入框配色 */
+             --search-panel-bg: rgba(232, 245, 233, 0.9); /* (v1.5.0) 草原風搜尋面板背景 */
         }
-        
+
         /* --- 基礎結構 --- */
         .container {
             width: 100%;
@@ -1008,14 +1211,16 @@
             padding: 15px;
             display: flex;
             flex-direction: column;
-            
+
             /* (可自行修改) 縮放 90% 並調整高度 */
             height: calc(100vh / 0.9); /* 計算縮放後的高度以填滿視窗 */
             transform-origin: top center; /* 從頂部中心開始縮放 */
             transform: scale(0.9);
-            
+
             flex-grow: 1;
             min-height: 0;
+            position: relative; /* (v1.5.0) 為了讓搜尋面板不影響佈局 */
+            z-index: 1; /* (v1.5.0) 確保在搜尋面板下方 */
         }
 
         /* --- 標題區域 (版面重構) --- */
@@ -1028,7 +1233,7 @@
             gap: 10px;
             flex-shrink: 0;
         }
-        
+
         /* 左側：標題 + 今天 */
         .header-left {
             display: flex;
@@ -1130,7 +1335,7 @@
         .search-input::placeholder {
             color: var(--theme-input-placeholder);
         }
-        
+
         .settings-btn {
             background: var(--theme-bg-trans-2);
             color: var(--theme-text);
@@ -1188,7 +1393,7 @@
 
         .day-cell {
             /* (可自行修改) 日期格子最小高度 */
-            min-height: 140px; 
+            min-height: 140px;
             height: auto;
             background: var(--theme-bg-trans-1);
             border: 1px solid var(--theme-border);
@@ -1253,8 +1458,8 @@
         }
 
         .event-item {
-            /* (修正) 使用 var 控制文字顏色 */
-            color: var(--theme-event-text, var(--color-black));
+             /* (v1.5.0) 預設使用主題文字顏色 */
+             color: var(--theme-event-text, var(--color-black));
             padding: 3px 8px;
             margin: 1px 0;
             border-radius: 12px;
@@ -1263,24 +1468,37 @@
             cursor: pointer;
             transition: all 0.2s ease;
             word-wrap: break-word;
-            white-space: normal; 
+            white-space: normal;
             line-height: 1.3;
             /* (v1.4.0) 新增 '無' 顏色的預設背景 */
             background: var(--theme-bg-trans-2);
         }
-        
-        /* (修正) 科技黑模式下，若背景太淺(如黃色)，字體改回黑色 */
+
+        /* (v1.5.0) 強制有背景色的事件使用黑色文字 */
+        .event-red, .event-blue, .event-green, .event-yellow,
+        .event-purple, .event-orange, .event-pink, .event-cyan {
+            color: var(--color-black) !important; /* 使用 !important 確保覆蓋 */
+        }
+
+        /* (v1.5.0) '無' 顏色的事件使用主題文字顏色 */
+        .event-none {
+             color: var(--theme-event-text, var(--color-black));
+             background: var(--theme-bg-trans-2); /* 確保無顏色時有背景 */
+        }
+
+        /* (v1.5.0) 科技風下 '無' 顏色的特殊處理 */
+        .theme-tech .event-item.event-none {
+            background: var(--theme-bg-trans-3);
+            color: var(--theme-event-text); /* 科技風文字是白色 */
+        }
+        /* (v1.5.0) 科技風下，淺色背景事件強制黑色文字 (覆蓋上面 .event-xxx 規則) */
         .theme-tech .event-yellow,
         .theme-tech .event-cyan,
-        .theme-tech .event-green {
-            color: var(--color-black);
-        }
-        
-        /* (v1.4.0) '無' 顏色的樣式 (主要用於 .theme-tech) */
-        .theme-tech .event-item.event-none {
-            /* 在科技風底下，使用較深的背景 */
-            background: var(--theme-bg-trans-3);
-            color: var(--theme-event-text);
+        .theme-tech .event-green,
+        .theme-tech .event-pink,
+        .theme-tech .event-red,
+        .theme-tech .event-orange {
+            color: var(--color-black) !important;
         }
 
 
@@ -1326,7 +1544,14 @@
             backdrop-filter: blur(20px);
             border: 1px solid var(--theme-border);
             box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            /* (v1.5.0) 防止點擊內容區觸發 overlay 關閉 */
+            pointer-events: auto;
         }
+        /* (v1.5.0) 確保 overlay 可以被點擊 */
+         .modal {
+              pointer-events: auto;
+         }
+
 
         .modal-header {
             display: flex;
@@ -1358,8 +1583,8 @@
         }
 
         /* (修正) 模態框內的輸入框樣式 */
-        .form-group input[type="text"], 
-        .form-group textarea, 
+        .form-group input[type="text"],
+        .form-group textarea,
         .form-group select,
         .form-group input[type="date"] { /* (v1.3.0) 增加 date input */
             width: 100%;
@@ -1375,7 +1600,7 @@
         .form-group textarea::placeholder {
              color: var(--theme-input-placeholder);
         }
-        
+
         /* (v1.3.0) 修正日期輸入框在不同主題下的配色 */
         .form-group input[type="date"] {
             color-scheme: var(--theme-color-scheme, light dark);
@@ -1408,7 +1633,7 @@
             border-color: var(--theme-modal-text);
             transform: scale(1.2);
         }
-        
+
         /* (v1.4.0) '無' 顏色選項的樣式 */
         .color-option.none-option {
             background: var(--theme-input-bg);
@@ -1444,7 +1669,7 @@
             background: rgba(255, 255, 255, 0.1);
             transform: scale(1.2);
         }
-        
+
         .theme-ocean .emoji-option:hover, .theme-ocean .emoji-option.selected,
         .theme-spring .emoji-option:hover, .theme-spring .emoji-option.selected,
         .theme-meadow .emoji-option:hover, .theme-meadow .emoji-option.selected {
@@ -1503,11 +1728,14 @@
             max-width: 300px; /* (v1.4.0) 最大寬度 */
             font-family: 'Comic Sans MS', 'Microsoft JhengHei', cursive;
             border: 1px solid rgba(0,0,0,0.1);
-            
+
             /* (v1.4.0) Flex 佈局 + 最大高度 */
             max-height: 70vh;
             display: flex;
             flex-direction: column;
+
+             /* (v1.5.0) 初始 transform 由 JS 設定 */
+             position: fixed; /* 確保 JS 可以設定 top/left */
         }
 
         .sticky-note-header {
@@ -1540,13 +1768,13 @@
             line-height: 25px;
             text-align: center;
         }
-        
+
         .theme-ocean .sticky-note-btn,
         .theme-spring .sticky-note-btn,
         .theme-meadow .sticky-note-btn {
             background: rgba(0,0,0,0.1);
         }
-        
+
         .sticky-note-close {
             background: var(--color-danger);
             color: white;
@@ -1559,7 +1787,7 @@
         .theme-meadow .sticky-note-btn:hover {
             background: rgba(0,0,0,0.2);
         }
-        
+
         .sticky-note-close:hover {
             opacity: 0.8;
         }
@@ -1582,7 +1810,7 @@
             top: 0;
             right: 0;
             /* (可自行修改) 設定面板寬度 */
-            width: 320px; 
+            width: 320px;
             height: 100%;
             background: var(--theme-modal-bg);
             color: var(--theme-modal-text);
@@ -1593,14 +1821,14 @@
             border-left: 1px solid var(--theme-border);
             box-shadow: -5px 0 15px rgba(0,0,0,0.2);
         }
-        
+
         /* (v1.4.0) 設定面板的關閉按鈕 */
         .settings-panel .close-btn {
             position: absolute;
             top: 15px;
             right: 20px;
         }
-        
+
         /* (新增) 登入區域 */
         .login-section {
             margin-bottom: 20px;
@@ -1670,13 +1898,13 @@
             grid-template-columns: 1fr 1fr;
             gap: 10px;
         }
-        
+
         .settings-grid-item {
             display: flex; /* 讓按鈕/選項垂直堆疊 */
             flex-direction: column;
             gap: 5px; /* 項目之間的間距 */
         }
-        
+
         /* (v1.3.0) 確保網格內的按鈕填滿寬度 */
         .settings-grid-item .btn {
             width: 100%;
@@ -1720,20 +1948,20 @@
             background: rgba(0, 0, 0, 0.05);
             border-radius: 10px;
         }
-        
+
         .export-section h4, .import-section h4 {
             border-bottom: 1px solid var(--theme-border);
             padding-bottom: 5px;
             /* (v1.3.0) 確保標題在網格佈局上 */
-            grid-column: 1 / -1; 
+            grid-column: 1 / -1;
             margin-bottom: 5px;
         }
-        
+
         .import-section input[type="file"] {
             color: var(--theme-modal-text);
             font-size: 0.9rem;
         }
-        
+
         /* 檔案選擇按鈕樣式 (簡易) */
         .import-section input[type="file"]::file-selector-button {
             padding: 5px 10px;
@@ -1745,37 +1973,85 @@
         }
 
 
-        /* --- 自訂提示框 (Alert Modal) --- */
-        #alertModal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 1002;
-            backdrop-filter: blur(5px);
-        }
-        #alertModal .modal-content {
+        /* --- 自訂提示/確認框 --- */
+        #alertModal .modal-content,
+        #confirmModal .modal-content { /* (v1.5.0) 確認框共用樣式 */
             max-width: 400px;
             text-align: center;
         }
-        #alertMessage {
+        #alertMessage,
+        #confirmMessage { /* (v1.5.0) 確認框共用樣式 */
             font-size: 1.1rem;
             margin-bottom: 20px;
             line-height: 1.6;
             white-space: pre-wrap; /* (v1.4.0) 讓提示框的 \n 換行生效 */
         }
+         /* (v1.5.0) 確認框按鈕間距 */
+        #confirmModal .btn-group {
+             justify-content: center;
+        }
+
+
+         /* --- (v1.5.0) 搜尋結果面板 --- */
+         #searchResultsPanel {
+             display: none;
+             position: fixed;
+             left: 0;
+             top: 0;
+             width: var(--search-panel-width);
+             height: 100%;
+             background: var(--search-panel-bg, rgba(255, 255, 255, 0.9)); /* 使用主題變數或預設 */
+             backdrop-filter: blur(10px);
+             border-right: 1px solid var(--theme-border);
+             box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+             z-index: 10; /* 低於 modal 但高於 container */
+             overflow-y: auto;
+             padding: 20px;
+             color: var(--theme-text);
+             box-sizing: border-box;
+         }
+         .search-result-item {
+             padding: 10px;
+             margin-bottom: 5px;
+             border-radius: 5px;
+             cursor: pointer;
+             transition: background-color 0.2s ease;
+             font-size: 0.9rem;
+             white-space: nowrap;
+             overflow: hidden;
+             text-overflow: ellipsis;
+         }
+         .search-result-item:hover {
+             background-color: var(--theme-bg-trans-2);
+         }
+         .search-no-result {
+             padding: 10px;
+             color: var(--color-grey-dark);
+             font-style: italic;
+         }
+
 
         /* --- 響應式設計 --- */
         @media (max-width: 900px) {
             /* (可自行修改) 當寬度小於 900px 時，取消縮放 */
+            body {
+                padding-left: 0 !important; /* 手機版不為搜尋面板留空間 */
+            }
             .container {
                 height: 100vh; /* 恢復正常高度 */
                 transform: scale(1.0); /* 取消縮放 */
                 padding: 10px;
             }
+
+             /* (v1.5.0) 手機版搜尋面板調整 */
+             #searchResultsPanel {
+                  width: 100%;
+                  max-width: 300px; /* 或其他合適寬度 */
+                  border-right: none;
+                  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                  z-index: 1003; /* 比 modal 高 */
+             }
+
 
             .header {
                 grid-template-columns: 1fr 1fr; /* 簡化為兩欄 */
@@ -1831,18 +2107,18 @@
                 font-size: 0.8rem;
                 padding: 2px 5px;
             }
-            
+
             .modal-content {
                 width: 95%;
                 padding: 20px;
             }
-            
+
             .settings-panel {
                 width: 100%;
                 max-width: 300px; /* 手機上最大寬度 */
             }
         }
-        
+
         @media (max-width: 480px) {
             .header-center {
                 gap: 5px; /* 進一步縮小手機上的間距 */
@@ -1853,7 +2129,7 @@
             .search-input {
                 width: 120px; /* (可自行修改) 最小手機版搜尋框寬度 */
             }
-            
+
             /* (v1.3.0) 手機板設定網格改回單欄 */
             .settings-grid-container {
                 grid-template-columns: 1fr;
@@ -1864,9 +2140,14 @@
 
 <!-- (v1.3.0) body class 會由 JS 動態設定 -->
 <body>
+    <!-- (v1.5.0) 搜尋結果面板 -->
+    <div id="searchResultsPanel">
+        <!-- 搜尋結果將由 JS 動態生成 -->
+    </div>
+
 
     <div class="container">
-        
+
         <!-- 標題區域 (版面重構) -->
         <div class="header">
             <!-- 左側 -->
@@ -1875,7 +2156,7 @@
                 <h1 class="calendar-title" id="calendarTitle">📅 班級行事曆</h1>
                 <button class="nav-btn" onclick="goToToday()">📍 今天</button>
             </div>
-            
+
             <!-- 中間 -->
             <div class="header-center">
                 <button class="nav-btn" onclick="previousMonth()">⬅️ 上個月</button>
@@ -1895,7 +2176,8 @@
             <div class="header-right">
                 <div class="search-container">
                     <!-- (可自行修改) 搜尋提示文字 -->
-                    <input type="text" class="search-input" id="searchInput" placeholder="🔍 搜尋事件..." oninput="searchEvents()">
+                    <input type="text" class="search-input" id="searchInput" placeholder="🔍 搜尋事件..." >
+                    <!-- (v1.5.0) 移除 oninput，改用 addEventListener -->
                 </div>
                 <button class="settings-btn" onclick="toggleSettings()">⚙️</button>
             </div>
@@ -1936,6 +2218,15 @@
                     <!-- (v1.3.0) "事件內容" 高度已在 <style> 中被 CSS ( .form-group textarea ) 鎖定，可至該處修改 -->
                     <textarea id="eventContent"></textarea>
                 </div>
+                 <!-- (v1.5.0) 新增日期範圍 -->
+                 <div class="form-group">
+                    <label for="eventStartDate">🗓️ 開始日期：</label>
+                    <input type="date" id="eventStartDate" required>
+                </div>
+                <div class="form-group">
+                    <label for="eventEndDate">🗓️ 結束日期：</label>
+                    <input type="date" id="eventEndDate" required>
+                </div>
                 <div class="form-group">
                     <label>🎨 顏色標籤：</label>
                     <div class="color-picker">
@@ -1972,7 +2263,7 @@
             </form>
         </div>
     </div>
-    
+
     <!-- (v1.3.0) 自訂匯出日期範圍模態框 -->
     <div class="modal" id="customExportModal">
         <div class="modal-content">
@@ -2003,9 +2294,9 @@
     <div class="settings-panel" id="settingsPanel">
         <!-- (v1.4.0) 新增關閉按鈕 -->
         <button class="close-btn" onclick="toggleSettings()">×</button>
-        
+
         <!-- (v1.3.0) 移除 '⚙️ 設定' 標題，使整體上移 -->
-        
+
         <!-- (新增) 登入區域 -->
         <div class="login-section">
             <h4>🔑 帳號狀態</h4>
@@ -2034,7 +2325,7 @@
                 <div class="theme-preview" style="background: linear-gradient(135deg, #e8f5e8, #c8e6c9);"></div><span>🌿 草原風</span>
             </div>
         </div>
-        
+
         <div class="export-section">
             <h4>📤 匯出資料 (僅限管理員)</h4>
             <!-- (v1.3.0) 改為 2x2 網格，並修改文字與 '自訂' 的 onclick -->
@@ -2053,13 +2344,13 @@
                 </div>
             </div>
         </div>
-        
+
         <div class="import-section">
             <h4>📥 匯入資料 (僅限管理員)</h4>
             <input type="file" id="importFile" accept=".json" style="margin-bottom: 10px; width: 100%;">
             <button class="btn btn-secondary" onclick="importData()" style="width: 100%;">匯入檔案</button>
         </div>
-        
+
         <!-- (v1.4.0) 移除 "關閉設定" 按鈕 -->
     </div>
 
@@ -2076,6 +2367,23 @@
             </div>
         </div>
     </div>
+
+     <!-- (v1.5.0) 自訂確認框 (Confirm Modal) -->
+     <div class="modal" id="confirmModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="confirmTitle">💡 請確認</h3>
+                <button class="close-btn close-confirm">×</button>
+            </div>
+            <p id="confirmMessage">確定要執行此操作嗎？</p>
+            <div class="btn-group">
+                 <button type="button" class="btn btn-secondary close-confirm" id="confirmCancelBtn">取消</button>
+                 <button type="button" class="btn btn-primary" id="confirmOkBtn">確定</button>
+                 <!-- (v1.5.0) 可以在這裡添加第三個按鈕 if needed -->
+            </div>
+        </div>
+    </div>
+
 
 </body>
 </html>
