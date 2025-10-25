@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- (v1.3.0) 更新版本號 -->
-    <title>班級行事曆 v1.3.0 (Firebase 公開版)</title>
+    <!-- (v1.4.0) 更新版本號 -->
+    <title>班級行事曆 v1.4.0 (Firebase 公開版)</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -27,7 +27,8 @@
             updateDoc,
             deleteDoc,
             onSnapshot,
-            query
+            query,
+            writeBatch // (v1.4.0) 匯入批次寫入
         } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
         // 🔥🔥🔥 Firebase 設定 🔥🔥🔥
@@ -103,7 +104,8 @@
                     if (currentUserId === ADMIN_UID) {
                         isAdmin = true;
                         document.getElementById('adminIndicator').style.display = 'inline-block';
-                        showCustomAlert("管理員登入成功！您現在可以編輯事件。");
+                        // (v1.4.0) 移除管理員登入成功提示
+                        // showCustomAlert("管理員登入成功！您現在可以編輯事件。");
                     } else {
                         isAdmin = false;
                         document.getElementById('adminIndicator').style.display = 'none';
@@ -324,7 +326,8 @@
                 
                 dayEvents.forEach(event => {
                     const eventElement = document.createElement('div');
-                    eventElement.className = `event-item ${event.color ? 'event-' + event.color : ''}`;
+                    // (v1.4.0) 處理 '無' 顏色的情況
+                    eventElement.className = `event-item ${event.color ? 'event-' + event.color : 'event-none'}`;
                     // 確保 event.title 不是 undefined 或 null
                     const title = event.title || '無標題';
                     eventElement.textContent = `${event.emoji || '●'} ${title}`;
@@ -372,12 +375,12 @@
                 modalTitle.textContent = '✏️ 編輯事件';
                 document.getElementById('eventTitle').value = event.title || '';
                 document.getElementById('eventContent').value = event.content || '';
-                selectedColor = event.color || '';
+                selectedColor = event.color || ''; // (v1.4.0) '' 對應 '無'
                 selectedEmoji = event.emoji || '';
                 editingEventId = event.id; // 儲存 Firestore Document ID
                 deleteBtn.style.display = 'inline-block';
                 
-                // 設定選中的顏色和表情符號
+                // (v1.4.0) 設定選中的顏色 ('' 會自動選中 '無')
                 document.querySelectorAll('.color-option').forEach(o => {
                     o.classList.toggle('selected', o.dataset.color === selectedColor);
                 });
@@ -388,13 +391,14 @@
                 // 新增模式
                 modalTitle.textContent = '📝 新增事件';
                 document.getElementById('eventForm').reset(); // 重設表單
-                selectedColor = '';
+                selectedColor = ''; // (v1.4.0) 預設為 '無'
                 selectedEmoji = '';
                 editingEventId = null;
                 deleteBtn.style.display = 'none';
                 
-                // 清除選擇
+                // (v1.4.0) 清除選擇 (並預選 '無')
                 document.querySelectorAll('.color-option').forEach(o => o.classList.remove('selected'));
+                document.querySelector('.color-option[data-color=""]').classList.add('selected');
                 document.querySelectorAll('.emoji-option').forEach(o => o.classList.remove('selected'));
             }
             
@@ -433,7 +437,7 @@
                 date: date,
                 title: title,
                 content: content,
-                color: selectedColor,
+                color: selectedColor, // (v1.4.0) '' 代表 '無'
                 emoji: selectedEmoji
             };
 
@@ -502,9 +506,11 @@
                 <div class="sticky-note-content">${event.content || '無內容'}</div>
             `;
             
-            // 設定位置
-            stickyNote.style.left = Math.min(clickEvent.pageX + 10, window.innerWidth - 220) + 'px';
-            stickyNote.style.top = Math.min(clickEvent.pageY + 10, window.innerHeight - 150) + 'px';
+            // (v1.4.0) 修改為固定在螢幕中間
+            stickyNote.style.position = 'fixed';
+            stickyNote.style.left = '50%';
+            stickyNote.style.top = '50%';
+            stickyNote.style.transform = 'translate(-50%, -50%)';
             
             // 添加拖曳功能
             makeDraggable(stickyNote);
@@ -545,12 +551,15 @@
                 pos3 = e.clientX;
                 pos4 = e.clientY;
                 
-                // 確保不會拖出視窗外
+                // (v1.4.0) 確保不會拖出視窗外 (基於 fixed 定位)
                 let newTop = Math.max(0, Math.min(element.offsetTop - pos2, window.innerHeight - element.offsetHeight));
                 let newLeft = Math.max(0, Math.min(element.offsetLeft - pos1, window.innerWidth - element.offsetWidth));
 
                 element.style.top = newTop + "px";
                 element.style.left = newLeft + "px";
+                
+                // (v1.4.0) 因為我們改用 transform 置中，拖曳時需取消 transform
+                element.style.transform = 'none'; 
             }
             
             function closeDragElement() {
@@ -754,7 +763,7 @@
         }
 
 
-        // 匯入功能 (僅限管理員)
+        // (v1.4.0) 匯入功能 (增加覆蓋選項)
         window.importData = async () => {
             if (!isAdmin) {
                 showCustomAlert("僅限管理員才能匯入資料！");
@@ -774,33 +783,81 @@
                 const importData = JSON.parse(text);
                 
                 if (importData.events && Array.isArray(importData.events)) {
-                    if (confirm(`確定要匯入 ${importData.events.length} 個事件嗎？這將會新增到 "公開" 事件中。`)) {
-                        
-                        const eventsCollectionRef = collection(db, 'public_events');
-                        
-                        // 使用 Promise.all 來批次處理匯入
-                        const importPromises = [];
-                        for (const eventData of importData.events) {
-                            // 移除任何可能存在的 'id'
-                            const { id, ...newEventData } = eventData;
-                            
-                            // 確保有標題和日期
-                            if (newEventData.title && newData.date) {
-                                importPromises.push(addDoc(eventsCollectionRef, newEventData));
+                    
+                    const eventsCollectionRef = collection(db, 'public_events');
+                    const eventsToImport = importData.events;
+                    
+                    // 詢問匯入模式
+                    const importMode = prompt(
+                        `偵測到 ${eventsToImport.length} 個事件。\n請選擇匯入模式：\n\n1. 全部新增 (保留相同日期的舊事件)\n2. 覆蓋 (刪除匯入檔案中相同日期的舊事件)\n\n請輸入 1 或 2：`, 
+                        "1"
+                    );
+
+                    if (importMode === "1") {
+                        // 模式 1：全部新增 (原v1.3邏輯，修正v1.3 bug)
+                        if (confirm(`確定要 "全部新增" ${eventsToImport.length} 個事件嗎？`)) {
+                            const importPromises = [];
+                            for (const eventData of eventsToImport) {
+                                const { id, ...newEventData } = eventData;
+                                // (v1.4.0) 修正 v1.3 bug (newData.date -> newEventData.date)
+                                if (newEventData.title && newEventData.date) {
+                                    importPromises.push(addDoc(eventsCollectionRef, newEventData));
+                                }
                             }
+                            await Promise.all(importPromises);
+                            showCustomAlert('新增匯入完成！');
+                        } else {
+                            showCustomAlert('已取消匯入。');
                         }
                         
-                        await Promise.all(importPromises);
+                    } else if (importMode === "2") {
+                        // 模式 2：覆蓋
+                        if (confirm(`⚠️ 確定要 "覆蓋" ${eventsToImport.length} 個事件嗎？\n這將會 "刪除" 匯入檔案中所有涉及日期的 "全部" 現有事件！\n此操作無法復原。`)) {
+                            
+                            // 1. 取得所有要覆蓋的日期
+                            const datesToOverwrite = new Set(eventsToImport.map(e => e.date));
+                            
+                            // 2. 找出本地快取中 (events 陣列) 所有需要刪除的事件
+                            const eventsToDelete = events.filter(e => datesToOverwrite.has(e.date));
+
+                            // 3. 建立批次作業
+                            const batch = writeBatch(db);
+                            
+                            // 4. 將刪除操作加入批次
+                            eventsToDelete.forEach(e => {
+                                const docRef = doc(db, 'public_events', e.id);
+                                batch.delete(docRef);
+                            });
+                            
+                            // 5. 將新增操作加入批次
+                            eventsToImport.forEach(eventData => {
+                                const { id, ...newEventData } = eventData;
+                                if (newEventData.title && newEventData.date) {
+                                    const newDocRef = doc(eventsCollectionRef); // 產生新 ID
+                                    batch.set(newDocRef, newEventData);
+                                }
+                            });
+                            
+                            // 6. 執行批次
+                            await batch.commit();
+                            
+                            showCustomAlert('覆蓋匯入完成！');
+                        } else {
+                            showCustomAlert('已取消匯入。');
+                        }
                         
-                        showCustomAlert('匯入完成！');
-                        fileInput.value = '';
-                        // onSnapshot 會自動更新介面
+                    } else {
+                        showCustomAlert('已取消匯入。');
                     }
+                    
+                    fileInput.value = '';
+                    
                 } else {
                     showCustomAlert('檔案格式不正確！');
                 }
             } catch (error) {
-                showCustomAlert('讀取檔案時發生錯誤：' + error.message);
+                console.error('匯入時發生錯誤：', error);
+                showCustomAlert('匯入時發生錯誤：' + error.message);
             }
         }
 
@@ -1202,12 +1259,14 @@
             margin: 1px 0;
             border-radius: 12px;
              /* (v1.3.0) (可自行修改) 日期方格中，事件標題的顯示大小 */
-            font-size: 1.2rem;
+            font-size: 0.9rem;
             cursor: pointer;
             transition: all 0.2s ease;
             word-wrap: break-word;
             white-space: normal; 
             line-height: 1.3;
+            /* (v1.4.0) 新增 '無' 顏色的預設背景 */
+            background: var(--theme-bg-trans-2);
         }
         
         /* (修正) 科技黑模式下，若背景太淺(如黃色)，字體改回黑色 */
@@ -1216,6 +1275,13 @@
         .theme-tech .event-green {
             color: var(--color-black);
         }
+        
+        /* (v1.4.0) '無' 顏色的樣式 (主要用於 .theme-tech) */
+        .theme-tech .event-item.event-none {
+            /* 在科技風底下，使用較深的背景 */
+            background: var(--theme-bg-trans-3);
+            color: var(--theme-event-text);
+        }
 
 
         .event-item:hover {
@@ -1223,7 +1289,7 @@
             box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         }
 
-        /* 事件顏色標籤 */
+        /* 事件顏色標籤 (v1.4.0) !important 確保覆蓋 .event-item 預設背景 */
         .event-red { background: var(--event-red) !important; }
         .event-blue { background: var(--event-blue) !important; }
         .event-green { background: var(--event-green) !important; }
@@ -1342,6 +1408,22 @@
             border-color: var(--theme-modal-text);
             transform: scale(1.2);
         }
+        
+        /* (v1.4.0) '無' 顏色選項的樣式 */
+        .color-option.none-option {
+            background: var(--theme-input-bg);
+            border: 1px solid var(--theme-border);
+            color: var(--theme-modal-text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            box-sizing: border-box; /* 確保 30x30 包含邊框 */
+        }
+        .color-option.none-option.selected {
+            border-color: var(--theme-modal-text); /* 確保 '無' 選項選中時邊框正確 */
+            border-width: 3px;
+        }
 
         .emoji-picker {
             display: flex;
@@ -1409,7 +1491,7 @@
 
         /* --- 便利貼 (Sticky Note) --- */
         .sticky-note {
-            position: fixed;
+            /* (v1.4.0) 移除 fixed 定位，改由 JS 設定 */
             background: var(--theme-sticky-bg, #ffeb3b);
             color: var(--theme-sticky-text, #333);
             padding: 15px;
@@ -1417,10 +1499,15 @@
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
             z-index: 999;
             cursor: move;
-            min-width: 200px;
-            max-width: 300px;
+            width: 90%; /* (v1.4.0) 寬度 */
+            max-width: 300px; /* (v1.4.0) 最大寬度 */
             font-family: 'Comic Sans MS', 'Microsoft JhengHei', cursive;
             border: 1px solid rgba(0,0,0,0.1);
+            
+            /* (v1.4.0) Flex 佈局 + 最大高度 */
+            max-height: 70vh;
+            display: flex;
+            flex-direction: column;
         }
 
         .sticky-note-header {
@@ -1431,6 +1518,7 @@
             font-weight: bold;
             padding-bottom: 5px;
             border-bottom: 1px dashed var(--theme-sticky-text);
+            flex-shrink: 0; /* (v1.4.0) 標頭不壓縮 */
         }
 
         .sticky-note-controls {
@@ -1479,6 +1567,11 @@
         .sticky-note-content {
             word-wrap: break-word;
             white-space: pre-wrap;
+            /* (v1.4.0) 內容滾動 */
+            overflow-y: auto;
+            flex-grow: 1;
+            min-height: 50px; /* 確保有最小高度 */
+            padding-right: 5px; /* 避免滾動條太貼近 */
         }
 
 
@@ -1499,6 +1592,13 @@
             overflow-y: auto;
             border-left: 1px solid var(--theme-border);
             box-shadow: -5px 0 15px rgba(0,0,0,0.2);
+        }
+        
+        /* (v1.4.0) 設定面板的關閉按鈕 */
+        .settings-panel .close-btn {
+            position: absolute;
+            top: 15px;
+            right: 20px;
         }
         
         /* (新增) 登入區域 */
@@ -1665,6 +1765,7 @@
             font-size: 1.1rem;
             margin-bottom: 20px;
             line-height: 1.6;
+            white-space: pre-wrap; /* (v1.4.0) 讓提示框的 \n 換行生效 */
         }
 
         /* --- 響應式設計 --- */
@@ -1838,6 +1939,8 @@
                 <div class="form-group">
                     <label>🎨 顏色標籤：</label>
                     <div class="color-picker">
+                        <!-- (v1.4.0) 新增 '無' 選項 -->
+                        <div class="color-option none-option" data-color="">無</div>
                         <!-- (可自行修改) 顏色選項 -->
                         <div class="color-option" style="background: var(--event-red)" data-color="red"></div>
                         <div class="color-option" style="background: var(--event-blue)" data-color="blue"></div>
@@ -1898,6 +2001,9 @@
 
     <!-- 設定面板 -->
     <div class="settings-panel" id="settingsPanel">
+        <!-- (v1.4.0) 新增關閉按鈕 -->
+        <button class="close-btn" onclick="toggleSettings()">×</button>
+        
         <!-- (v1.3.0) 移除 '⚙️ 設定' 標題，使整體上移 -->
         
         <!-- (新增) 登入區域 -->
@@ -1954,8 +2060,7 @@
             <button class="btn btn-secondary" onclick="importData()" style="width: 100%;">匯入檔案</button>
         </div>
         
-        <!-- (v1.3.0) "關閉設定" 按鈕上移 (調整 margin-top) -->
-        <button class="btn btn-secondary" onclick="toggleSettings()" style="width: 100%; margin-top: 10px;">關閉設定</button>
+        <!-- (v1.4.0) 移除 "關閉設定" 按鈕 -->
     </div>
 
     <!-- 自訂提示框 (Alert Modal) -->
