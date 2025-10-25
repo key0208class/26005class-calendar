@@ -3,10 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>班級行事曆 v1.1.0 (Firebase 版)</title>
+    <title>班級行事曆 v1.2.0 (Firebase 公開版)</title>
 
     <!-- 匯入 Firebase SDK -->
-    <!-- 注意：v10+ 版本使用 module 方式匯入 -->
     <script type="module">
         // 匯入 Firebase 核心 App
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
@@ -31,16 +30,26 @@
         } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
         // 🔥🔥🔥 Firebase 設定 🔥🔥🔥
-        // 請將您從 Firebase 專案複製的 firebaseConfig 物件貼到下方
+        // (此處沿用您先前版本中的設定)
         const firebaseConfig = {
             apiKey: "AIzaSyB4aHwmiGMsxlLFuINdneE7v2DGWwD_-VA",
-  authDomain: "myclass26005-calendar.firebaseapp.com",
-  projectId: "myclass26005-calendar",
-  storageBucket: "myclass26005-calendar.firebasestorage.app",
-  messagingSenderId: "123055248147",
-  appId: "1:123055248147:web:c9b2bc6e1d6a6b9a58c0e6"
+            authDomain: "myclass26005-calendar.firebaseapp.com",
+            projectId: "myclass26005-calendar",
+            storageBucket: "myclass26005-calendar.firebasestorage.app",
+            messagingSenderId: "123055248147",
+            appId: "1:123055248147:web:c9b2bc6e1d6a6b9a58c0e6"
         };
         // 🔥🔥🔥 Firebase 設定結束 🔥🔥🔥
+        
+        // ---
+        // ⚠️⚠️⚠️ 【重要】管理員設定 ⚠️⚠️⚠️
+        // 請將您自己的 Google 帳號登入後的 UID 貼在下方。
+        // 如何取得 UID：
+        // 1. 登入一次行事曆。
+        // 2. 打開瀏覽器開發者工具 (F12)。
+        // 3. 在 Console (主控台) 中找到 "目前使用者 UID:" 的訊息，複製那串英數混合的字串。
+        const ADMIN_UID = "請在這裡貼上您的 Google 帳號 UID"; 
+        // ---
 
         // 初始化 Firebase
         const app = initializeApp(firebaseConfig);
@@ -57,6 +66,7 @@
         let selectedColor = '';
         let selectedEmoji = '';
         let currentUserId = null; // 目前登入的使用者 ID
+        let isAdmin = false; // 是否為管理員
         let unsubscribeFromEvents = null; // 用來取消 Firestore 監聽
 
         // 初始化
@@ -73,31 +83,39 @@
                 if (user) {
                     // 使用者已登入
                     currentUserId = user.uid;
+                    console.log("目前使用者 UID:", currentUserId); // 方便複製 UID
+                    
                     document.getElementById('loginBtn').style.display = 'none';
                     document.getElementById('userInfo').style.display = 'flex';
                     document.getElementById('userName').textContent = user.displayName || user.email;
                     document.getElementById('userPhoto').src = user.photoURL || 'https://placehold.co/40x40/cccccc/ffffff?text=User';
-                    // 載入該使用者的事件
-                    loadEventsFromFirestore();
+                    
+                    // 檢查是否為管理員
+                    if (currentUserId === ADMIN_UID) {
+                        isAdmin = true;
+                        document.getElementById('adminIndicator').style.display = 'inline-block';
+                        showCustomAlert("管理員登入成功！您現在可以編輯事件。");
+                    } else {
+                        isAdmin = false;
+                        document.getElementById('adminIndicator').style.display = 'none';
+                    }
+                    
                 } else {
                     // 使用者已登出
                     currentUserId = null;
+                    isAdmin = false;
                     document.getElementById('loginBtn').style.display = 'block';
                     document.getElementById('userInfo').style.display = 'none';
-                    
-                    // 取消先前的事件監聽
-                    if (unsubscribeFromEvents) {
-                        unsubscribeFromEvents();
-                        unsubscribeFromEvents = null;
-                    }
-                    // 清空本地事件並重新渲染
-                    events = [];
-                    renderCalendar();
+                    document.getElementById('adminIndicator').style.display = 'none';
                 }
+                
+                // 登入狀態改變後，重新渲染行事曆以更新權限外觀
+                // (事件讀取不受登入狀態影響)
+                renderCalendar();
             });
 
-            // 渲染行事曆 (初始為空)
-            renderCalendar();
+            // 載入公開事件 (無論是否登入)
+            loadEventsFromFirestore();
             
             // 設定事件監聽器
             setupEventListeners();
@@ -125,18 +143,16 @@
             }
         };
 
-        // 從 Firestore 載入事件
+        // 從 Firestore 載入事件 (讀取公開集合)
         function loadEventsFromFirestore() {
-            if (!currentUserId) return;
-
             // 如果已有監聽，先取消
             if (unsubscribeFromEvents) {
                 unsubscribeFromEvents();
             }
 
-            // 建立指向使用者事件集合的查詢
-            const eventsCollectionRef = collection(db, 'users', currentUserId, 'events');
-            const q = query(eventsCollectionRef); // 雖然目前沒有排序或過濾，但保留 query 結構
+            // 建立指向 "公開事件" 集合的查詢
+            const eventsCollectionRef = collection(db, 'public_events');
+            const q = query(eventsCollectionRef); 
 
             // 設定即時監聽
             unsubscribeFromEvents = onSnapshot(q, (querySnapshot) => {
@@ -150,8 +166,8 @@
                 // 重新渲染行事曆
                 renderCalendar();
             }, (error) => {
-                console.error("載入事件時發生錯誤:", error);
-                showCustomAlert("無法從雲端載入事件，請稍後再試。");
+                console.error("載入公開事件時發生錯誤:", error);
+                showCustomAlert("無法從雲端載入事件，請檢查網路連線或 Firebase 規則設定。");
             });
         }
 
@@ -206,6 +222,11 @@
                     this.style.display = 'none';
                 }
             });
+
+            // 標題點擊事件
+            document.getElementById('calendarTitle').addEventListener('click', () => {
+                window.open('https://key0208class.github.io/26005class-calendar/', '_blank');
+            });
         }
 
         // 渲染行事曆
@@ -243,16 +264,9 @@
             }
 
             // 添加下個月的日期以填滿網格
-            // 修正：確保總是顯示 6 週 (42 格) 或 5 週 (35 格)
+            const targetCells = 42; // 固定 6 週 (42 格) 佈局
             const totalCells = grid.children.length - 7; // 減去星期標題
-            let remainingCells;
-            if (totalCells <= 28) remainingCells = 42 - totalCells; // 應對 2 月
-            else if (totalCells <= 35) remainingCells = 35 - totalCells;
-            else remainingCells = 42 - totalCells;
-
-            // 修正為 6 週 (42 格) 佈局，以保持高度一致
-            const targetCells = 42;
-            remainingCells = targetCells - totalCells;
+            let remainingCells = targetCells - totalCells;
             
             for (let day = 1; day <= remainingCells; day++) {
                 const dayCell = createDayCell(day, true, null);
@@ -305,14 +319,26 @@
                     eventsContainer.appendChild(eventElement);
                 });
 
-                // 點擊日期格子新增事件
-                cell.onclick = () => {
-                    if (!currentUserId) {
-                        showCustomAlert("請先登入才能新增事件喔！");
+                // (需求修改) 點擊日期 "數字" 新增事件
+                dayNumber.onclick = (e) => {
+                    e.stopPropagation(); // 防止觸發到 sticky note 的關閉事件
+                    if (!isAdmin) {
+                        showCustomAlert("您沒有編輯權限。請使用管理員帳號登入。");
                         return;
                     }
                     openEventModal(dateStr);
                 };
+                
+                // (需求修改) 點擊方格空白處無效，但若為管理員應提示
+                cell.onclick = () => {
+                    if (isAdmin) {
+                        showCustomAlert("請點擊日期數字來新增事件。");
+                    }
+                };
+
+            } else if (isOtherMonth) {
+                // (需求修改) 讓數字也可以點擊
+                dayNumber.onclick = (e) => { e.stopPropagation(); };
             }
 
             return cell;
@@ -320,9 +346,16 @@
 
         // 開啟事件模態框
         window.openEventModal = (date, event = null) => {
+            // 權限檢查
+            if (!isAdmin) {
+                showCustomAlert("您沒有編輯權限。");
+                return;
+            }
+            
             const modal = document.getElementById('eventModal');
             const modalTitle = document.getElementById('modalTitle');
             const deleteBtn = document.getElementById('deleteBtn');
+            const saveBtn = document.getElementById('saveBtn');
             
             if (event) {
                 // 編輯模式
@@ -355,6 +388,10 @@
                 document.querySelectorAll('.emoji-option').forEach(o => o.classList.remove('selected'));
             }
             
+            // 顯示儲存和刪除按鈕 (因為已經檢查過 admin)
+            deleteBtn.style.display = event ? 'inline-block' : 'none';
+            saveBtn.style.display = 'inline-block';
+            
             modal.style.display = 'block';
             // 儲存當前日期
             modal.dataset.date = date;
@@ -367,8 +404,9 @@
 
         // 儲存事件 (至 Firebase)
         async function saveEvent() {
-            if (!currentUserId) {
-                showCustomAlert("請先登入才能儲存事件！");
+            // 權限檢查
+            if (!isAdmin) {
+                showCustomAlert("您沒有儲存權限！");
                 return;
             }
 
@@ -387,34 +425,37 @@
                 content: content,
                 color: selectedColor,
                 emoji: selectedEmoji
-                // 注意：我們不需要儲存 'id'，Firebase 會自動處理
             };
 
             try {
                 if (editingEventId) {
                     // 更新現有事件
-                    const eventDocRef = doc(db, 'users', currentUserId, 'events', editingEventId);
+                    const eventDocRef = doc(db, 'public_events', editingEventId);
                     await updateDoc(eventDocRef, eventData);
                 } else {
                     // 創建新事件
-                    const eventsCollectionRef = collection(db, 'users', currentUserId, 'events');
+                    const eventsCollectionRef = collection(db, 'public_events');
                     await addDoc(eventsCollectionRef, eventData);
                 }
                 closeModal();
                 // onSnapshot 會自動觸發並更新介面
             } catch (error) {
                 console.error("儲存事件時發生錯誤:", error);
-                showCustomAlert("儲存事件失敗，請重試。");
+                showCustomAlert("儲存事件失敗，請檢查 Firebase 規則或網路連線。");
             }
         }
 
         // 刪除事件 (從 Firebase)
         window.deleteEvent = async () => {
-            if (!currentUserId || !editingEventId) return;
+            // 權限檢查
+            if (!isAdmin || !editingEventId) {
+                showCustomAlert("您沒有刪除權限！");
+                return;
+            }
             
             if (confirm('確定要刪除這個事件嗎？')) {
                 try {
-                    const eventDocRef = doc(db, 'users', currentUserId, 'events', editingEventId);
+                    const eventDocRef = doc(db, 'public_events', editingEventId);
                     await deleteDoc(eventDocRef);
                     closeModal();
                     // onSnapshot 會自動觸發並更新介面
@@ -433,15 +474,18 @@
             const stickyNote = document.createElement('div');
             stickyNote.className = 'sticky-note';
             
-            // 使用 JSON.stringify 來安全地將 event 物件傳遞到 onclick 屬性中
-            // 我們需要轉義單引號，以防 ' " ' 混合出錯
-            const eventJson = JSON.stringify(event).replace(/'/g, "\\'");
+            // 轉義 event 物件以便安全傳遞
+            const eventJson = JSON.stringify(event).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+
+            // 根據是否為管理員決定是否顯示編輯按鈕
+            const editButtonHtml = isAdmin ? 
+                `<button class="sticky-note-btn" onclick='window.editEventFromSticky(${eventJson})'>✏️</button>` : '';
 
             stickyNote.innerHTML = `
                 <div class="sticky-note-header">
                     <span>${event.emoji || '📝'} ${event.title || '無標題'}</span>
                     <div class="sticky-note-controls">
-                        <button class="sticky-note-btn" onclick='window.editEventFromSticky(${eventJson})'>✏️</button>
+                        ${editButtonHtml}
                         <button class="sticky-note-close" onclick="this.closest('.sticky-note').remove()">×</button>
                     </div>
                 </div>
@@ -577,10 +621,10 @@
             panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
         }
 
-        // 匯出功能
+        // 匯出功能 (僅限管理員)
         window.exportData = (type) => {
-            if (!currentUserId) {
-                showCustomAlert("請先登入才能匯出資料！");
+            if (!isAdmin) {
+                showCustomAlert("僅限管理員才能匯出資料！");
                 return;
             }
             // 'events' 陣列已由 onSnapshot 同步，直接使用即可
@@ -619,8 +663,8 @@
         }
 
         window.exportCustomRange = () => {
-            if (!currentUserId) {
-                showCustomAlert("請先登入才能匯出資料！");
+            if (!isAdmin) {
+                showCustomAlert("僅限管理員才能匯出資料！");
                 return;
             }
             const startDate = prompt('請輸入開始日期 (YYYY-MM-DD):');
@@ -656,10 +700,10 @@
         }
 
 
-        // 匯入功能 (至 Firebase)
+        // 匯入功能 (僅限管理員)
         window.importData = async () => {
-            if (!currentUserId) {
-                showCustomAlert("請先登入才能匯入資料！");
+            if (!isAdmin) {
+                showCustomAlert("僅限管理員才能匯入資料！");
                 return;
             }
 
@@ -676,15 +720,15 @@
                 const importData = JSON.parse(text);
                 
                 if (importData.events && Array.isArray(importData.events)) {
-                    if (confirm(`確定要匯入 ${importData.events.length} 個事件嗎？這將會新增到您雲端的事件中。`)) {
+                    if (confirm(`確定要匯入 ${importData.events.length} 個事件嗎？這將會新增到 "公開" 事件中。`)) {
                         
-                        const eventsCollectionRef = collection(db, 'users', currentUserId, 'events');
+                        const eventsCollectionRef = collection(db, 'public_events');
                         
                         // 使用 Promise.all 來批次處理匯入
                         const importPromises = [];
                         for (const eventData of importData.events) {
-                            // 移除任何可能存在的 'id' 或 '__backendId'
-                            const { id, __backendId, ...newEventData } = eventData;
+                            // 移除任何可能存在的 'id'
+                            const { id, ...newEventData } = eventData;
                             
                             // 確保有標題和日期
                             if (newEventData.title && newEventData.date) {
@@ -744,11 +788,12 @@
             margin: 0;
             padding: 0;
             font-family: 'Microsoft JhengHei', 'PingFang TC', 'Helvetica Neue', Arial, sans-serif;
-            height: 100vh; /* 改為 vh 確保佔滿視窗高度 */
-            overflow-x: hidden;
+            height: 100vh;
+            overflow: hidden; /* 隱藏滾動條，因為我們在 container 縮放 */
             transition: all 0.3s ease;
-            display: flex; /* 使用 flex 佈局 */
-            flex-direction: column; /* 垂直排列 */
+            display: flex;
+            justify-content: center; /* 水平置中 */
+            align-items: flex-start; /* 靠上對齊 */
         }
 
         /* --- 主題樣式 --- */
@@ -761,14 +806,17 @@
             --theme-bg-trans-1: rgba(255, 255, 255, 0.1);
             --theme-bg-trans-2: rgba(255, 255, 255, 0.2);
             --theme-bg-trans-3: rgba(255, 255, 255, 0.3);
-            --theme-border: rgba(255, 255, 255, 0.15); /* 修正：新增清晰邊框 */
+            --theme-border: rgba(255, 255, 255, 0.15);
             --theme-modal-bg: rgba(30, 40, 70, 0.95);
             --theme-modal-text: var(--color-white);
             --theme-input-bg: rgba(255, 255, 255, 0.1);
             --theme-input-text: var(--color-white);
             --theme-input-placeholder: rgba(255, 255, 255, 0.7);
+            --theme-select-bg: #16213e; /* (修正) 下拉選單背景 */
+            --theme-select-text: var(--color-white); /* (修正) 下拉選單文字 */
             --theme-sticky-bg: #2a2a4e;
             --theme-sticky-text: var(--color-white);
+            --theme-event-text: var(--color-white); /* (修正) 事件文字顏色 */
         }
 
         /* 海洋風 */
@@ -786,8 +834,11 @@
             --theme-input-bg: rgba(255, 255, 255, 0.7);
             --theme-input-text: var(--color-black);
             --theme-input-placeholder: rgba(0, 0, 0, 0.5);
+            --theme-select-bg: var(--color-white); /* (修正) 下拉選單背景 */
+            --theme-select-text: var(--color-black); /* (修正) 下拉選單文字 */
             --theme-sticky-bg: #fff9c4;
             --theme-sticky-text: var(--color-black);
+            --theme-event-text: var(--color-black); /* (修正) 事件文字顏色 */
         }
 
         /* 春天風 */
@@ -805,8 +856,11 @@
             --theme-input-bg: rgba(255, 255, 255, 0.7);
             --theme-input-text: var(--color-black);
             --theme-input-placeholder: rgba(0, 0, 0, 0.5);
+            --theme-select-bg: var(--color-white); /* (修正) 下拉選單背景 */
+            --theme-select-text: var(--color-black); /* (修正) 下拉選單文字 */
             --theme-sticky-bg: #fff9c4;
             --theme-sticky-text: var(--color-black);
+            --theme-event-text: var(--color-black); /* (修正) 事件文字顏色 */
         }
 
         /* 草原風 */
@@ -824,128 +878,80 @@
             --theme-input-bg: rgba(255, 255, 255, 0.7);
             --theme-input-text: var(--color-black);
             --theme-input-placeholder: rgba(0, 0, 0, 0.5);
+            --theme-select-bg: var(--color-white); /* (修正) 下拉選單背景 */
+            --theme-select-text: var(--color-black); /* (修正) 下拉選單文字 */
             --theme-sticky-bg: #fff9c4;
             --theme-sticky-text: var(--color-black);
+            --theme-event-text: var(--color-black); /* (修正) 事件文字顏色 */
         }
+        
         /* --- 基礎結構 --- */
         .container {
             width: 100%;
-            max-width: 1400px; /* 稍微加寬以容納更多內容 */
+            max-width: 1400px;
             margin: 0 auto;
-            padding: 15px; /* 縮小 padding，爭取空間 */
+            padding: 15px;
             display: flex;
             flex-direction: column;
-            flex-grow: 1; /* 讓 container 填滿 body 剩餘空間 */
-            min-height: 0; /* 修正 flex 佈局在 Safari 的問題 */
+            
+            /* (可自行修改) 縮放 90% 並調整高度 */
+            height: calc(100vh / 0.9); /* 計算縮放後的高度以填滿視窗 */
+            transform-origin: top center; /* 從頂部中心開始縮放 */
+            transform: scale(0.9);
+            
+            flex-grow: 1;
+            min-height: 0;
         }
 
-        /* --- 標題區域 --- */
+        /* --- 標題區域 (版面重構) --- */
         .header {
-            display: flex;
-            justify-content: space-between;
+            display: grid;
+            /* (可自行修改) 版面配置 */
+            grid-template-columns: 1fr auto 1fr; /* 左中右三欄 */
             align-items: center;
-            margin-bottom: 15px; /* 縮小 margin */
-            flex-wrap: wrap;
+            margin-bottom: 15px;
             gap: 10px;
-            flex-shrink: 0; /* 不壓縮標題區域 */
+            flex-shrink: 0;
         }
-
+        
+        /* 左側：標題 + 今天 */
         .header-left {
             display: flex;
             align-items: center;
             gap: 15px;
-            flex-wrap: wrap;
+            justify-self: start; /* 靠左 */
         }
 
         .calendar-title {
             font-size: 2rem;
             font-weight: bold;
             color: var(--theme-text);
+            cursor: pointer; /* (新增) 提示可點擊 */
+            transition: opacity 0.3s ease;
+        }
+        .calendar-title:hover {
+            opacity: 0.8;
         }
 
-        /* 登入/登出區域 */
-        #loginBtn {
-            background: var(--color-primary);
-            color: var(--color-white);
-            border: none;
-            padding: 10px 20px;
-            border-radius: 25px;
-            cursor: pointer;
-            font-size: 1rem;
-            transition: all 0.3s ease;
-        }
-        #loginBtn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        }
-
-        #userInfo {
+        /* 中間：導航 */
+        .header-center {
             display: flex;
             align-items: center;
             gap: 10px;
-            background: var(--theme-bg-trans-1);
-            padding: 5px 10px;
-            border-radius: 25px;
-        }
-        #userPhoto {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            border: 2px solid var(--theme-border);
-        }
-        #userName {
-            font-weight: bold;
-            font-size: 0.9rem;
-            color: var(--theme-text);
-        }
-        #logoutBtn {
-            background: var(--color-danger);
-            color: var(--color-white);
-            border: none;
-            padding: 5px 10px;
-            border-radius: 15px;
-            cursor: pointer;
-            font-size: 0.8rem;
+            justify-self: center; /* 置中 */
         }
 
-        .settings-btn {
-            background: var(--theme-bg-trans-2);
-            color: var(--theme-text);
-            border: none;
-            border-radius: 50%;
-            width: 45px;
-            height: 45px;
-            font-size: 1.5rem;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .settings-btn:hover {
-            background: var(--theme-bg-trans-3);
-            transform: rotate(90deg);
-        }
-
-        /* --- 導航 / 搜尋 --- */
-        .controls-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-            flex-wrap: wrap;
-            gap: 10px;
-            flex-shrink: 0; /* 不壓縮控制列 */
-        }
-        
-        .navigation {
+        /* 右側：搜尋 + 設定 */
+        .header-right {
             display: flex;
             align-items: center;
             gap: 10px;
-            flex-wrap: wrap;
+            justify-self: end; /* 靠右 */
         }
 
         .nav-btn {
             background: var(--theme-bg-trans-2);
-            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            border: 1px solid var(--theme-border);
             padding: 10px 15px;
             border-radius: 25px;
             cursor: pointer;
@@ -967,7 +973,7 @@
 
         .month-select, .year-select {
             background: var(--theme-input-bg);
-            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            border: 1px solid var(--theme-border);
             padding: 10px 15px;
             border-radius: 15px;
             font-size: 1.2rem;
@@ -976,21 +982,29 @@
             color: var(--theme-input-text);
             min-width: 100px;
         }
-        /* 修正 Select 在不同主題的箭頭顏色 */
-        .theme-tech .month-select, .theme-tech .year-select {
-            filter: invert(1);
+
+        /* (修正) 處理下拉選單在不同主題的樣式 */
+        .month-select, .year-select {
+            background-color: var(--theme-select-bg);
+            color: var(--theme-select-text);
+        }
+        .month-select option, .year-select option {
+            background-color: var(--theme-select-bg);
+            color: var(--theme-select-text);
         }
 
 
         .search-container {
-            /* 移到 controls-bar 中 */
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
 
         .search-input {
             width: 100%;
-            max-width: 300px;
+            min-width: 250px; /* (可自行修改) 搜尋框最小寬度 */
             padding: 12px 20px;
-            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            border: 1px solid var(--theme-border);
             border-radius: 25px;
             background: var(--theme-input-bg);
             color: var(--theme-input-text);
@@ -1001,15 +1015,35 @@
         .search-input::placeholder {
             color: var(--theme-input-placeholder);
         }
+        
+        .settings-btn {
+            background: var(--theme-bg-trans-2);
+            color: var(--theme-text);
+            border: none;
+            border-radius: 50%;
+            width: 45px;
+            height: 45px;
+            font-size: 1.5rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            flex-shrink: 0; /* 防止按鈕變形 */
+        }
+
+        .settings-btn:hover {
+            background: var(--theme-bg-trans-3);
+            transform: rotate(90deg);
+        }
+
+        /* (移除 .controls-bar，因為功能已合併到 .header) */
 
         /* --- 行事曆網格 --- */
         .calendar-grid-container {
             flex-grow: 1; /* 佔滿剩餘垂直空間 */
             overflow-y: auto; /* 內容過多時滾動 */
-            min-height: 0; /* 修正 flex 佈局 */
+            min-height: 0;
             border-radius: 15px;
             background: var(--theme-bg-trans-1);
-            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            border: 1px solid var(--theme-border);
             backdrop-filter: blur(10px);
             padding: 10px;
         }
@@ -1017,7 +1051,7 @@
         .calendar-grid {
             display: grid;
             grid-template-columns: repeat(7, 1fr);
-            gap: 5px; /* 增加格子間距 */
+            gap: 5px;
         }
 
         .day-header {
@@ -1038,14 +1072,14 @@
         }
 
         .day-cell {
-            /* 使用者可自行修改日期格子最小高度 */
+            /* (可自行修改) 日期格子最小高度 */
             min-height: 140px; 
-            height: auto; /* 修正：讓高度自動延伸 */
+            height: auto;
             background: var(--theme-bg-trans-1);
-            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            border: 1px solid var(--theme-border);
             border-radius: 10px;
             padding: 8px;
-            cursor: pointer;
+            /* cursor: pointer; (移除) 改由 day-number 觸發 */
             transition: all 0.3s ease;
             position: relative;
             display: flex;
@@ -1055,7 +1089,7 @@
 
         .day-cell:hover {
             background: var(--theme-bg-trans-2);
-            transform: translateY(-2px);
+            /* transform: translateY(-2px); (移除) 避免空白處點擊的視覺干擾 */
         }
 
         .day-cell.today {
@@ -1070,7 +1104,6 @@
         }
         .day-cell.other-month:hover {
             background: transparent;
-            transform: none;
         }
 
 
@@ -1079,30 +1112,52 @@
             font-size: 1.1rem;
             margin-bottom: 5px;
             flex-shrink: 0;
+            cursor: pointer; /* (新增) 提示日期數字可點擊 */
+            display: inline-block; /* 讓點擊區域符合文字大小 */
+            padding: 3px 5px;
+            border-radius: 5px;
+            transition: background-color 0.2s ease;
         }
+        .day-number:hover {
+            background-color: var(--theme-bg-trans-3);
+        }
+        .other-month .day-number {
+            cursor: default;
+        }
+        .other-month .day-number:hover {
+            background-color: transparent;
+        }
+
 
         .events-container {
             flex-grow: 1;
             display: flex;
             flex-direction: column;
             gap: 2px;
-            min-height: 0; /* 修正 flex 佈局 */
+            min-height: 0;
         }
 
         .event-item {
-            color: var(--color-black);
-            padding: 3px 8px; /* 增加 padding */
+            /* (修正) 使用 var 控制文字顏色 */
+            color: var(--theme-event-text, var(--color-black));
+            padding: 3px 8px;
             margin: 1px 0;
             border-radius: 12px;
-            font-size: 0.85rem; /* 稍微放大字體 */
+            font-size: 0.85rem;
             cursor: pointer;
             transition: all 0.2s ease;
-            
-            /* 修正：允許文字換行 */
             word-wrap: break-word;
             white-space: normal; 
             line-height: 1.3;
         }
+        
+        /* (修正) 科技黑模式下，若背景太淺(如黃色)，字體改回黑色 */
+        .theme-tech .event-yellow,
+        .theme-tech .event-cyan,
+        .theme-tech .event-green {
+            color: var(--color-black);
+        }
+
 
         .event-item:hover {
             transform: scale(1.05);
@@ -1144,7 +1199,7 @@
             width: 90%;
             max-width: 500px;
             backdrop-filter: blur(20px);
-            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            border: 1px solid var(--theme-border);
             box-shadow: 0 10px 30px rgba(0,0,0,0.3);
         }
 
@@ -1177,18 +1232,24 @@
             font-weight: bold;
         }
 
+        /* (修正) 模態框內的輸入框樣式 */
         .form-group input[type="text"], 
         .form-group textarea, 
         .form-group select {
             width: 100%;
             padding: 10px;
-            border: 1px solid var(--color-grey-mid);
+            border: 1px solid var(--theme-border); /* 修正邊框 */
             border-radius: 10px;
             font-size: 1rem;
             box-sizing: border-box;
-            background: var(--color-grey-light);
-            color: var(--color-black);
+            background: var(--theme-input-bg); /* 修正背景 */
+            color: var(--theme-input-text); /* 修正文字顏色 */
         }
+        .form-group input[type="text"]::placeholder,
+        .form-group textarea::placeholder {
+             color: var(--theme-input-placeholder);
+        }
+
 
         .form-group textarea {
             height: 100px;
@@ -1232,9 +1293,16 @@
         }
 
         .emoji-option:hover, .emoji-option.selected {
-            background: rgba(0, 0, 0, 0.1);
+            background: rgba(255, 255, 255, 0.1);
             transform: scale(1.2);
         }
+        
+        .theme-ocean .emoji-option:hover, .theme-ocean .emoji-option.selected,
+        .theme-spring .emoji-option:hover, .theme-spring .emoji-option.selected,
+        .theme-meadow .emoji-option:hover, .theme-meadow .emoji-option.selected {
+             background: rgba(0, 0, 0, 0.1);
+        }
+
 
         .btn-group {
             display: flex;
@@ -1296,7 +1364,7 @@
             margin-bottom: 10px;
             font-weight: bold;
             padding-bottom: 5px;
-            border-bottom: 1px dashed rgba(0,0,0,0.2);
+            border-bottom: 1px dashed var(--theme-sticky-text);
         }
 
         .sticky-note-controls {
@@ -1306,7 +1374,7 @@
 
         .sticky-note-btn,
         .sticky-note-close {
-            background: rgba(0,0,0,0.1);
+            background: rgba(255,255,255,0.2);
             color: inherit;
             border: none;
             border-radius: 50%;
@@ -1315,23 +1383,36 @@
             cursor: pointer;
             font-size: 0.9rem;
             transition: all 0.2s ease;
-            line-height: 25px; /* 垂直置中 */
+            line-height: 25px;
             text-align: center;
         }
+        
+        .theme-ocean .sticky-note-btn,
+        .theme-spring .sticky-note-btn,
+        .theme-meadow .sticky-note-btn {
+            background: rgba(0,0,0,0.1);
+        }
+        
         .sticky-note-close {
             background: var(--color-danger);
             color: white;
         }
         .sticky-note-btn:hover {
+            background: rgba(255,255,255,0.4);
+        }
+        .theme-ocean .sticky-note-btn:hover,
+        .theme-spring .sticky-note-btn:hover,
+        .theme-meadow .sticky-note-btn:hover {
             background: rgba(0,0,0,0.2);
         }
+        
         .sticky-note-close:hover {
             opacity: 0.8;
         }
 
         .sticky-note-content {
             word-wrap: break-word;
-            white-space: pre-wrap; /* 保留換行 */
+            white-space: pre-wrap;
         }
 
 
@@ -1341,7 +1422,8 @@
             position: fixed;
             top: 0;
             right: 0;
-            width: 300px;
+            /* (可自行修改) 設定面板寬度 */
+            width: 320px; 
             height: 100%;
             background: var(--theme-modal-bg);
             color: var(--theme-modal-text);
@@ -1352,6 +1434,70 @@
             border-left: 1px solid var(--theme-border);
             box-shadow: -5px 0 15px rgba(0,0,0,0.2);
         }
+        
+        /* (新增) 登入區域 */
+        .login-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.05);
+            border-radius: 10px;
+        }
+        #loginBtn {
+            background: var(--color-primary);
+            color: var(--color-white);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+        #loginBtn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+        #userInfo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--theme-bg-trans-1);
+            padding: 5px 10px;
+            border-radius: 25px;
+        }
+        #userPhoto {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 2px solid var(--theme-border);
+        }
+        #userName {
+            font-weight: bold;
+            font-size: 0.9rem;
+            color: var(--theme-text);
+            flex-grow: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        #logoutBtn {
+            background: var(--color-danger);
+            color: var(--color-white);
+            border: none;
+            padding: 5px 10px;
+            border-radius: 15px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            flex-shrink: 0;
+        }
+        #adminIndicator {
+            color: #ffc107;
+            font-weight: bold;
+            font-size: 0.8rem;
+            margin-left: 10px;
+            display: none;
+        }
+
 
         .theme-option {
             display: flex;
@@ -1365,8 +1511,14 @@
         }
 
         .theme-option:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .theme-ocean .theme-option:hover,
+        .theme-spring .theme-option:hover,
+        .theme-meadow .theme-option:hover {
             background: rgba(0, 0, 0, 0.1);
         }
+
 
         .theme-preview {
             width: 30px;
@@ -1381,6 +1533,27 @@
             background: rgba(0, 0, 0, 0.05);
             border-radius: 10px;
         }
+        
+        .export-section h4, .import-section h4 {
+            border-bottom: 1px solid var(--theme-border);
+            padding-bottom: 5px;
+        }
+        
+        .import-section input[type="file"] {
+            color: var(--theme-modal-text);
+            font-size: 0.9rem;
+        }
+        
+        /* 檔案選擇按鈕樣式 (簡易) */
+        .import-section input[type="file"]::file-selector-button {
+            padding: 5px 10px;
+            border-radius: 5px;
+            border: 1px solid var(--theme-border);
+            background: var(--theme-bg-trans-2);
+            color: var(--theme-modal-text);
+            cursor: pointer;
+        }
+
 
         /* --- 自訂提示框 (Alert Modal) --- */
         #alertModal {
@@ -1401,50 +1574,60 @@
         #alertMessage {
             font-size: 1.1rem;
             margin-bottom: 20px;
+            line-height: 1.6;
         }
 
         /* --- 響應式設計 --- */
-        @media (max-width: 768px) {
+        @media (max-width: 900px) {
+            /* (可自行修改) 當寬度小於 900px 時，取消縮放 */
             .container {
+                height: 100vh; /* 恢復正常高度 */
+                transform: scale(1.0); /* 取消縮放 */
                 padding: 10px;
-                height: auto; /* 修正：手機上高度自動 */
-            }
-            
-            .header {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-            .header-left {
-                width: 100%;
-                justify-content: space-between;
-            }
-            .header-right {
-                width: 100%;
-            }
-            #loginBtn, #userInfo {
-                width: 100%;
-                justify-content: center;
             }
 
-            .controls-bar {
-                flex-direction: column;
+            .header {
+                grid-template-columns: 1fr 1fr; /* 簡化為兩欄 */
                 gap: 15px;
             }
-            .search-input {
-                max-width: 100%;
+            .header-left {
+                grid-column: 1 / 2;
+                justify-self: start;
+            }
+            .header-center {
+                grid-column: 1 / 3; /* 月份導航佔滿第二行 */
+                grid-row: 2 / 3;
+                justify-self: center;
+            }
+            .header-right {
+                grid-column: 2 / 3;
+                grid-row: 1 / 2;
+                justify-self: end;
             }
 
             .calendar-title {
                 font-size: 1.5rem;
             }
-
-            /* 修正：在手機上使用 flex-grow: 1 會導致問題，改用 min-height */
-            .calendar-grid-container {
-                flex-grow: 0; 
-                min-height: 500px; /* 給一個最小高度 */
-                overflow-y: auto;
+            .nav-btn {
+                padding: 8px 12px;
+                font-size: 0.9rem;
+            }
+            .month-select, .year-select {
+                font-size: 1rem;
+                padding: 8px 10px;
+                min-width: 80px;
+            }
+            .search-input {
+                min-width: auto;
+                width: 150px; /* (可自行修改) 手機版搜尋框寬度 */
+                padding: 10px 15px;
+                font-size: 0.9rem;
             }
 
+            .calendar-grid-container {
+                flex-grow: 1;
+                min-height: 450px; /* 確保有最小高度 */
+            }
             .day-cell {
                 min-height: 100px; /* 手機上格子小一點 */
                 padding: 5px;
@@ -1464,6 +1647,19 @@
             
             .settings-panel {
                 width: 100%;
+                max-width: 300px; /* 手機上最大寬度 */
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .header-center {
+                gap: 5px; /* 進一步縮小手機上的間距 */
+            }
+            .month-select, .year-select {
+                min-width: 70px;
+            }
+            .search-input {
+                width: 120px; /* (可自行修改) 最小手機版搜尋框寬度 */
             }
         }
     </style>
@@ -1473,28 +1669,17 @@
 
     <div class="container">
         
-        <!-- 標題區域 -->
+        <!-- 標題區域 (版面重構) -->
         <div class="header">
+            <!-- 左側 -->
             <div class="header-left">
+                <!-- (可自行修改) 標題文字 -->
                 <h1 class="calendar-title" id="calendarTitle">📅 班級行事曆</h1>
                 <button class="nav-btn" onclick="goToToday()">📍 今天</button>
             </div>
-            <div class="header-right">
-                <!-- 登入/登出區域 -->
-                <button id="loginBtn" onclick="loginWithGoogle()">🚀 使用 Google 登入</button>
-                <div id="userInfo" style="display: none;">
-                    <img id="userPhoto" src="" alt="User">
-                    <span id="userName"></span>
-                    <button id="logoutBtn" onclick="logout()">登出</button>
-                </div>
-                <button class="settings-btn" onclick="toggleSettings()">⚙️</button>
-            </div>
-        </div>
-
-        <!-- 導航 / 搜尋 -->
-        <div class="controls-bar">
-            <!-- 導航區域 -->
-            <div class="navigation">
+            
+            <!-- 中間 -->
+            <div class="header-center">
                 <button class="nav-btn" onclick="previousMonth()">⬅️ 上個月</button>
                 <div class="month-year">
                     <select class="month-select" id="monthSelect" onchange="changeMonth()">
@@ -1507,11 +1692,18 @@
                 </div>
                 <button class="nav-btn" onclick="nextMonth()">下個月 ➡️</button>
             </div>
-            <!-- 搜尋區域 -->
-            <div class="search-container">
-                <input type="text" class="search-input" id="searchInput" placeholder="🔍 搜尋事件..." oninput="searchEvents()">
+
+            <!-- 右側 -->
+            <div class="header-right">
+                <div class="search-container">
+                    <!-- (可自行修改) 搜尋提示文字 -->
+                    <input type="text" class="search-input" id="searchInput" placeholder="🔍 搜尋事件..." oninput="searchEvents()">
+                </div>
+                <button class="settings-btn" onclick="toggleSettings()">⚙️</button>
             </div>
         </div>
+
+        <!-- (移除 .controls-bar) -->
 
         <!-- 行事曆網格 (容器) -->
         <div class="calendar-grid-container">
@@ -1548,6 +1740,7 @@
                 <div class="form-group">
                     <label>🎨 顏色標籤：</label>
                     <div class="color-picker">
+                        <!-- (可自行修改) 顏色選項 -->
                         <div class="color-option" style="background: var(--event-red)" data-color="red"></div>
                         <div class="color-option" style="background: var(--event-blue)" data-color="blue"></div>
                         <div class="color-option" style="background: var(--event-green)" data-color="green"></div>
@@ -1561,6 +1754,7 @@
                 <div class="form-group">
                     <label>😊 表情符號：</label>
                     <div class="emoji-picker">
+                        <!-- (可自行修改) Emoji 選項 -->
                         <span class="emoji-option" data-emoji="">無</span> <span class="emoji-option" data-emoji="📚">📚</span>
                         <span class="emoji-option" data-emoji="💉">💉</span> <span class="emoji-option" data-emoji="🎉">🎉</span>
                         <span class="emoji-option" data-emoji="📝">📝</span> <span class="emoji-option" data-emoji="🏃">🏃</span>
@@ -1572,7 +1766,7 @@
                 <div class="btn-group">
                     <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
                     <button type="button" class="btn btn-danger" id="deleteBtn" onclick="deleteEvent()" style="display: none;">刪除</button>
-                    <button type="submit" class="btn btn-primary">儲存</button>
+                    <button type="submit" class="btn btn-primary" id="saveBtn" style="display: none;">儲存</button>
                 </div>
             </form>
         </div>
@@ -1581,6 +1775,19 @@
     <!-- 設定面板 -->
     <div class="settings-panel" id="settingsPanel">
         <h3>⚙️ 設定</h3>
+        
+        <!-- (新增) 登入區域 -->
+        <div class="login-section">
+            <h4>🔑 帳號狀態</h4>
+            <button id="loginBtn" onclick="loginWithGoogle()">🚀 使用 Google 登入</button>
+            <div id="userInfo" style="display: none;">
+                <img id="userPhoto" src="" alt="User">
+                <span id="userName"></span>
+                <span id="adminIndicator">👑</span>
+                <button id="logoutBtn" onclick="logout()">登出</button>
+            </div>
+        </div>
+
         <h4>🎨 主題風格</h4>
         <div class="theme-option" onclick="changeTheme('tech')">
             <div class="theme-preview" style="background: linear-gradient(135deg, #1a1a2e, #16213e);"></div><span>🖥️ 科技風</span>
@@ -1596,7 +1803,7 @@
         </div>
         
         <div class="export-section">
-            <h4>📤 匯出資料</h4>
+            <h4>📤 匯出資料 (僅限管理員)</h4>
             <button class="btn btn-primary" onclick="exportData('all')" style="margin: 5px; width: 100%;">匯出全部</button>
             <button class="btn btn-primary" onclick="exportData('year')" style="margin: 5px; width: 100%;">匯出該年</button>
             <button class="btn btn-primary" onclick="exportData('month')" style="margin: 5px; width: 100%;">匯出該月</button>
@@ -1604,7 +1811,7 @@
         </div>
         
         <div class="import-section">
-            <h4>📥 匯入資料</h4>
+            <h4>📥 匯入資料 (僅限管理員)</h4>
             <input type="file" id="importFile" accept=".json" style="margin-bottom: 10px; width: 100%;">
             <button class="btn btn-secondary" onclick="importData()" style="width: 100%;">匯入檔案</button>
         </div>
