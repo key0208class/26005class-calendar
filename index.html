@@ -1,0 +1,1630 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>班級行事曆 v1.1.0 (Firebase 版)</title>
+
+    <!-- 匯入 Firebase SDK -->
+    <!-- 注意：v10+ 版本使用 module 方式匯入 -->
+    <script type="module">
+        // 匯入 Firebase 核心 App
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        // 匯入 Firebase 驗證 (Auth)
+        import {
+            getAuth,
+            onAuthStateChanged,
+            GoogleAuthProvider,
+            signInWithPopup,
+            signOut
+        } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        // 匯入 Firebase 雲端資料庫 (Firestore)
+        import {
+            getFirestore,
+            collection,
+            doc,
+            addDoc,
+            updateDoc,
+            deleteDoc,
+            onSnapshot,
+            query
+        } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+        // 🔥🔥🔥 Firebase 設定 🔥🔥🔥
+        // 請將您從 Firebase 專案複製的 firebaseConfig 物件貼到下方
+        const firebaseConfig = {
+            apiKey: "AIzaSyB4aHwmiGMsxlLFuINdneE7v2DGWwD_-VA",
+  authDomain: "myclass26005-calendar.firebaseapp.com",
+  projectId: "myclass26005-calendar",
+  storageBucket: "myclass26005-calendar.firebasestorage.app",
+  messagingSenderId: "123055248147",
+  appId: "1:123055248147:web:c9b2bc6e1d6a6b9a58c0e6"
+        };
+        // 🔥🔥🔥 Firebase 設定結束 🔥🔥🔥
+
+        // 初始化 Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const provider = new GoogleAuthProvider();
+
+        // 全域變數
+        let currentDate = new Date();
+        let currentMonth = currentDate.getMonth();
+        let currentYear = currentDate.getFullYear();
+        let events = []; // 本地事件快取 (由 Firebase 同步)
+        let editingEventId = null; // 現在儲存的是 Firestore 的 Document ID
+        let selectedColor = '';
+        let selectedEmoji = '';
+        let currentUserId = null; // 目前登入的使用者 ID
+        let unsubscribeFromEvents = null; // 用來取消 Firestore 監聽
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            // 初始化年份選擇器
+            initYearSelect();
+            
+            // 設定當前月份和年份
+            document.getElementById('monthSelect').value = currentMonth;
+            document.getElementById('yearSelect').value = currentYear;
+            
+            // 監聽 Firebase 驗證狀態
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    // 使用者已登入
+                    currentUserId = user.uid;
+                    document.getElementById('loginBtn').style.display = 'none';
+                    document.getElementById('userInfo').style.display = 'flex';
+                    document.getElementById('userName').textContent = user.displayName || user.email;
+                    document.getElementById('userPhoto').src = user.photoURL || 'https://placehold.co/40x40/cccccc/ffffff?text=User';
+                    // 載入該使用者的事件
+                    loadEventsFromFirestore();
+                } else {
+                    // 使用者已登出
+                    currentUserId = null;
+                    document.getElementById('loginBtn').style.display = 'block';
+                    document.getElementById('userInfo').style.display = 'none';
+                    
+                    // 取消先前的事件監聽
+                    if (unsubscribeFromEvents) {
+                        unsubscribeFromEvents();
+                        unsubscribeFromEvents = null;
+                    }
+                    // 清空本地事件並重新渲染
+                    events = [];
+                    renderCalendar();
+                }
+            });
+
+            // 渲染行事曆 (初始為空)
+            renderCalendar();
+            
+            // 設定事件監聽器
+            setupEventListeners();
+        });
+
+        // 綁定全域函式到 window 物件，以便 HTML onclick 可以呼叫
+        window.loginWithGoogle = async () => {
+            try {
+                await signInWithPopup(auth, provider);
+                // 狀態變更將由 onAuthStateChanged 處理
+            } catch (error) {
+                console.error("Google 登入失敗:", error);
+                showCustomAlert("Google 登入失敗，請檢查彈出視窗是否被阻擋。");
+            }
+        };
+
+        window.logout = async () => {
+            if (confirm('確定要登出嗎？')) {
+                try {
+                    await signOut(auth);
+                    // 狀態變更將由 onAuthStateChanged 處理
+                } catch (error) {
+                    console.error("登出失敗:", error);
+                }
+            }
+        };
+
+        // 從 Firestore 載入事件
+        function loadEventsFromFirestore() {
+            if (!currentUserId) return;
+
+            // 如果已有監聽，先取消
+            if (unsubscribeFromEvents) {
+                unsubscribeFromEvents();
+            }
+
+            // 建立指向使用者事件集合的查詢
+            const eventsCollectionRef = collection(db, 'users', currentUserId, 'events');
+            const q = query(eventsCollectionRef); // 雖然目前沒有排序或過濾，但保留 query 結構
+
+            // 設定即時監聽
+            unsubscribeFromEvents = onSnapshot(q, (querySnapshot) => {
+                events = []; // 清空本地快取
+                querySnapshot.forEach((doc) => {
+                    events.push({
+                        id: doc.id, // 儲存 Firestore Document ID
+                        ...doc.data()
+                    });
+                });
+                // 重新渲染行事曆
+                renderCalendar();
+            }, (error) => {
+                console.error("載入事件時發生錯誤:", error);
+                showCustomAlert("無法從雲端載入事件，請稍後再試。");
+            });
+        }
+
+
+        // 初始化年份選擇器
+        function initYearSelect() {
+            const yearSelect = document.getElementById('yearSelect');
+            for (let year = 1950; year <= 2099; year++) {
+                const option = document.createElement('option');
+                option.value = year;
+                option.textContent = year + '年';
+                yearSelect.appendChild(option);
+            }
+        }
+
+        // 設定事件監聽器
+        function setupEventListeners() {
+            // 顏色選擇器
+            document.querySelectorAll('.color-option').forEach(option => {
+                option.addEventListener('click', function() {
+                    document.querySelectorAll('.color-option').forEach(o => o.classList.remove('selected'));
+                    this.classList.add('selected');
+                    selectedColor = this.dataset.color;
+                });
+            });
+
+            // 表情符號選擇器
+            document.querySelectorAll('.emoji-option').forEach(option => {
+                option.addEventListener('click', function() {
+                    document.querySelectorAll('.emoji-option').forEach(o => o.classList.remove('selected'));
+                    this.classList.add('selected');
+                    selectedEmoji = this.dataset.emoji;
+                });
+            });
+
+            // 表單提交
+            document.getElementById('eventForm').addEventListener('submit', function(e) {
+                e.preventDefault();
+                saveEvent();
+            });
+
+            // 點擊模態框外部關閉
+            document.getElementById('eventModal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    closeModal();
+                }
+            });
+
+            // 關閉自訂提示框
+            document.getElementById('alertModal').addEventListener('click', function(e) {
+                if (e.target === this || e.target.classList.contains('close-alert')) {
+                    this.style.display = 'none';
+                }
+            });
+        }
+
+        // 渲染行事曆
+        function renderCalendar() {
+            const grid = document.getElementById('calendarGrid');
+            
+            // 清除現有的日期格子（保留星期標題）
+            const dayHeaders = grid.querySelectorAll('.day-header');
+            grid.innerHTML = '';
+            dayHeaders.forEach(header => grid.appendChild(header));
+
+            // 計算月份的第一天和最後一天
+            const firstDay = new Date(currentYear, currentMonth, 1);
+            const lastDay = new Date(currentYear, currentMonth + 1, 0);
+            const daysInMonth = lastDay.getDate();
+            
+            // 計算第一天是星期幾（調整為週一開始）
+            let startDay = firstDay.getDay();
+            startDay = startDay === 0 ? 6 : startDay - 1;
+
+            // 添加上個月的日期
+            const prevMonth = new Date(currentYear, currentMonth, 0);
+            const prevMonthDays = prevMonth.getDate();
+            
+            for (let i = startDay - 1; i >= 0; i--) {
+                const dayCell = createDayCell(prevMonthDays - i, true, null);
+                grid.appendChild(dayCell);
+            }
+
+            // 添加當月的日期
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const dayCell = createDayCell(day, false, dateStr);
+                grid.appendChild(dayCell);
+            }
+
+            // 添加下個月的日期以填滿網格
+            // 修正：確保總是顯示 6 週 (42 格) 或 5 週 (35 格)
+            const totalCells = grid.children.length - 7; // 減去星期標題
+            let remainingCells;
+            if (totalCells <= 28) remainingCells = 42 - totalCells; // 應對 2 月
+            else if (totalCells <= 35) remainingCells = 35 - totalCells;
+            else remainingCells = 42 - totalCells;
+
+            // 修正為 6 週 (42 格) 佈局，以保持高度一致
+            const targetCells = 42;
+            remainingCells = targetCells - totalCells;
+            
+            for (let day = 1; day <= remainingCells; day++) {
+                const dayCell = createDayCell(day, true, null);
+                grid.appendChild(dayCell);
+            }
+        }
+
+        // 創建日期格子
+        function createDayCell(day, isOtherMonth, dateStr) {
+            const cell = document.createElement('div');
+            cell.className = 'day-cell';
+            if (isOtherMonth) {
+                cell.classList.add('other-month');
+            }
+
+            // 檢查是否為今天
+            const today = new Date();
+            if (!isOtherMonth &&
+                day === today.getDate() &&
+                currentMonth === today.getMonth() &&
+                currentYear === today.getFullYear()) {
+                cell.classList.add('today');
+            }
+
+            const dayNumber = document.createElement('div');
+            dayNumber.className = 'day-number';
+            dayNumber.textContent = day;
+            cell.appendChild(dayNumber);
+
+            // 事件容器
+            const eventsContainer = document.createElement('div');
+            eventsContainer.className = 'events-container';
+            cell.appendChild(eventsContainer);
+
+
+            // 添加該日期的事件
+            if (!isOtherMonth && dateStr) {
+                const dayEvents = events.filter(event => event.date === dateStr);
+                
+                dayEvents.forEach(event => {
+                    const eventElement = document.createElement('div');
+                    eventElement.className = `event-item ${event.color ? 'event-' + event.color : ''}`;
+                    // 確保 event.title 不是 undefined 或 null
+                    const title = event.title || '無標題';
+                    eventElement.textContent = `${event.emoji || '●'} ${title}`;
+                    eventElement.onclick = (e) => {
+                        e.stopPropagation();
+                        showStickyNote(event, e);
+                    };
+                    eventsContainer.appendChild(eventElement);
+                });
+
+                // 點擊日期格子新增事件
+                cell.onclick = () => {
+                    if (!currentUserId) {
+                        showCustomAlert("請先登入才能新增事件喔！");
+                        return;
+                    }
+                    openEventModal(dateStr);
+                };
+            }
+
+            return cell;
+        }
+
+        // 開啟事件模態框
+        window.openEventModal = (date, event = null) => {
+            const modal = document.getElementById('eventModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const deleteBtn = document.getElementById('deleteBtn');
+            
+            if (event) {
+                // 編輯模式
+                modalTitle.textContent = '✏️ 編輯事件';
+                document.getElementById('eventTitle').value = event.title || '';
+                document.getElementById('eventContent').value = event.content || '';
+                selectedColor = event.color || '';
+                selectedEmoji = event.emoji || '';
+                editingEventId = event.id; // 儲存 Firestore Document ID
+                deleteBtn.style.display = 'inline-block';
+                
+                // 設定選中的顏色和表情符號
+                document.querySelectorAll('.color-option').forEach(o => {
+                    o.classList.toggle('selected', o.dataset.color === selectedColor);
+                });
+                document.querySelectorAll('.emoji-option').forEach(o => {
+                    o.classList.toggle('selected', o.dataset.emoji === selectedEmoji);
+                });
+            } else {
+                // 新增模式
+                modalTitle.textContent = '📝 新增事件';
+                document.getElementById('eventForm').reset(); // 重設表單
+                selectedColor = '';
+                selectedEmoji = '';
+                editingEventId = null;
+                deleteBtn.style.display = 'none';
+                
+                // 清除選擇
+                document.querySelectorAll('.color-option').forEach(o => o.classList.remove('selected'));
+                document.querySelectorAll('.emoji-option').forEach(o => o.classList.remove('selected'));
+            }
+            
+            modal.style.display = 'block';
+            // 儲存當前日期
+            modal.dataset.date = date;
+        }
+
+        // 關閉模態框
+        window.closeModal = () => {
+            document.getElementById('eventModal').style.display = 'none';
+        }
+
+        // 儲存事件 (至 Firebase)
+        async function saveEvent() {
+            if (!currentUserId) {
+                showCustomAlert("請先登入才能儲存事件！");
+                return;
+            }
+
+            const title = document.getElementById('eventTitle').value.trim();
+            const content = document.getElementById('eventContent').value.trim();
+            const date = document.getElementById('eventModal').dataset.date;
+            
+            if (!title) {
+                showCustomAlert('請輸入事件標題！');
+                return;
+            }
+
+            const eventData = {
+                date: date,
+                title: title,
+                content: content,
+                color: selectedColor,
+                emoji: selectedEmoji
+                // 注意：我們不需要儲存 'id'，Firebase 會自動處理
+            };
+
+            try {
+                if (editingEventId) {
+                    // 更新現有事件
+                    const eventDocRef = doc(db, 'users', currentUserId, 'events', editingEventId);
+                    await updateDoc(eventDocRef, eventData);
+                } else {
+                    // 創建新事件
+                    const eventsCollectionRef = collection(db, 'users', currentUserId, 'events');
+                    await addDoc(eventsCollectionRef, eventData);
+                }
+                closeModal();
+                // onSnapshot 會自動觸發並更新介面
+            } catch (error) {
+                console.error("儲存事件時發生錯誤:", error);
+                showCustomAlert("儲存事件失敗，請重試。");
+            }
+        }
+
+        // 刪除事件 (從 Firebase)
+        window.deleteEvent = async () => {
+            if (!currentUserId || !editingEventId) return;
+            
+            if (confirm('確定要刪除這個事件嗎？')) {
+                try {
+                    const eventDocRef = doc(db, 'users', currentUserId, 'events', editingEventId);
+                    await deleteDoc(eventDocRef);
+                    closeModal();
+                    // onSnapshot 會自動觸發並更新介面
+                } catch (error) {
+                    console.error("刪除事件時發生錯誤:", error);
+                    showCustomAlert("刪除事件失敗，請重試。");
+                }
+            }
+        }
+
+        // 顯示便利貼
+        function showStickyNote(event, clickEvent) {
+            // 移除現有的便利貼
+            document.querySelectorAll('.sticky-note').forEach(note => note.remove());
+            
+            const stickyNote = document.createElement('div');
+            stickyNote.className = 'sticky-note';
+            
+            // 使用 JSON.stringify 來安全地將 event 物件傳遞到 onclick 屬性中
+            // 我們需要轉義單引號，以防 ' " ' 混合出錯
+            const eventJson = JSON.stringify(event).replace(/'/g, "\\'");
+
+            stickyNote.innerHTML = `
+                <div class="sticky-note-header">
+                    <span>${event.emoji || '📝'} ${event.title || '無標題'}</span>
+                    <div class="sticky-note-controls">
+                        <button class="sticky-note-btn" onclick='window.editEventFromSticky(${eventJson})'>✏️</button>
+                        <button class="sticky-note-close" onclick="this.closest('.sticky-note').remove()">×</button>
+                    </div>
+                </div>
+                <div class="sticky-note-content">${event.content || '無內容'}</div>
+            `;
+            
+            // 設定位置
+            stickyNote.style.left = Math.min(clickEvent.pageX + 10, window.innerWidth - 220) + 'px';
+            stickyNote.style.top = Math.min(clickEvent.pageY + 10, window.innerHeight - 150) + 'px';
+            
+            // 添加拖曳功能
+            makeDraggable(stickyNote);
+            
+            document.body.appendChild(stickyNote);
+        }
+
+        // 從便利貼編輯
+        window.editEventFromSticky = (event) => {
+            // event 物件現在包含了 Firestore 'id'
+            document.querySelectorAll('.sticky-note').forEach(note => note.remove());
+            openEventModal(event.date, event);
+        };
+
+
+        // 使元素可拖曳
+        function makeDraggable(element) {
+            let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+            
+            // 優先從 header 拖曳
+            const header = element.querySelector('.sticky-note-header');
+            (header || element).onmousedown = dragMouseDown;
+            
+            function dragMouseDown(e) {
+                e = e || window.event;
+                e.preventDefault();
+                pos3 = e.clientX;
+                pos4 = e.clientY;
+                document.onmouseup = closeDragElement;
+                document.onmousemove = elementDrag;
+            }
+            
+            function elementDrag(e) {
+                e = e || window.event;
+                e.preventDefault();
+                pos1 = pos3 - e.clientX;
+                pos2 = pos4 - e.clientY;
+                pos3 = e.clientX;
+                pos4 = e.clientY;
+                
+                // 確保不會拖出視窗外
+                let newTop = Math.max(0, Math.min(element.offsetTop - pos2, window.innerHeight - element.offsetHeight));
+                let newLeft = Math.max(0, Math.min(element.offsetLeft - pos1, window.innerWidth - element.offsetWidth));
+
+                element.style.top = newTop + "px";
+                element.style.left = newLeft + "px";
+            }
+            
+            function closeDragElement() {
+                document.onmouseup = null;
+                document.onmousemove = null;
+            }
+        }
+
+        // 導航功能
+        window.previousMonth = () => {
+            currentMonth--;
+            if (currentMonth < 0) {
+                currentMonth = 11;
+                currentYear--;
+            }
+            updateSelectors();
+            renderCalendar();
+        }
+
+        window.nextMonth = () => {
+            currentMonth++;
+            if (currentMonth > 11) {
+                currentMonth = 0;
+                currentYear++;
+            }
+            updateSelectors();
+            renderCalendar();
+        }
+
+        window.changeMonth = () => {
+            currentMonth = parseInt(document.getElementById('monthSelect').value);
+            renderCalendar();
+        }
+
+        window.changeYear = () => {
+            currentYear = parseInt(document.getElementById('yearSelect').value);
+            renderCalendar();
+        }
+
+        window.goToToday = () => {
+            const today = new Date();
+            currentMonth = today.getMonth();
+            currentYear = today.getFullYear();
+            updateSelectors();
+            renderCalendar();
+        }
+
+        function updateSelectors() {
+            document.getElementById('monthSelect').value = currentMonth;
+            document.getElementById('yearSelect').value = currentYear;
+        }
+
+        // 搜尋功能
+        window.searchEvents = () => {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const eventItems = document.querySelectorAll('.event-item');
+            
+            eventItems.forEach(item => {
+                const text = item.textContent.toLowerCase();
+                if (searchTerm === '' || text.includes(searchTerm)) {
+                    item.style.opacity = '1';
+                    item.style.transform = 'scale(1)';
+                } else {
+                    item.style.opacity = '0.3';
+                    item.style.transform = 'scale(0.9)';
+                }
+            });
+        }
+
+        // 主題切換
+        window.changeTheme = (theme) => {
+            document.body.className = `theme-${theme}`;
+        }
+
+        // 設定面板
+        window.toggleSettings = () => {
+            const panel = document.getElementById('settingsPanel');
+            panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+        }
+
+        // 匯出功能
+        window.exportData = (type) => {
+            if (!currentUserId) {
+                showCustomAlert("請先登入才能匯出資料！");
+                return;
+            }
+            // 'events' 陣列已由 onSnapshot 同步，直接使用即可
+            let dataToExport = [];
+            const now = new Date();
+            
+            switch(type) {
+                case 'all':
+                    dataToExport = events;
+                    break;
+                case 'year':
+                    dataToExport = events.filter(event => {
+                        const eventYear = new Date(event.date).getFullYear();
+                        return eventYear === currentYear;
+                    });
+                    break;
+                case 'month':
+                    dataToExport = events.filter(event => {
+                        const eventDate = new Date(event.date);
+                        return eventDate.getFullYear() === currentYear && 
+                               eventDate.getMonth() === currentMonth;
+                    });
+                    break;
+            }
+            
+            // 移除 Firestore 'id'，避免匯入時混淆
+            const cleanDataToExport = dataToExport.map(({ id, ...rest }) => rest);
+
+            const exportFile = {
+                exportDate: now.toISOString(),
+                type: type,
+                events: cleanDataToExport
+            };
+            
+            downloadJson(exportFile, `班級行事曆_${type}_${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}.json`);
+        }
+
+        window.exportCustomRange = () => {
+            if (!currentUserId) {
+                showCustomAlert("請先登入才能匯出資料！");
+                return;
+            }
+            const startDate = prompt('請輸入開始日期 (YYYY-MM-DD):');
+            const endDate = prompt('請輸入結束日期 (YYYY-MM-DD):');
+            
+            if (startDate && endDate) {
+                const dataToExport = events.filter(event => {
+                    return event.date >= startDate && event.date <= endDate;
+                });
+                
+                // 移除 Firestore 'id'
+                const cleanDataToExport = dataToExport.map(({ id, ...rest }) => rest);
+
+                const exportFile = {
+                    exportDate: new Date().toISOString(),
+                    type: 'custom',
+                    dateRange: { start: startDate, end: endDate },
+                    events: cleanDataToExport
+                };
+                
+                downloadJson(exportFile, `班級行事曆_自訂範圍_${startDate}_${endDate}.json`);
+            }
+        }
+
+        function downloadJson(data, filename) {
+            const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+
+        // 匯入功能 (至 Firebase)
+        window.importData = async () => {
+            if (!currentUserId) {
+                showCustomAlert("請先登入才能匯入資料！");
+                return;
+            }
+
+            const fileInput = document.getElementById('importFile');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showCustomAlert('請選擇要匯入的檔案！');
+                return;
+            }
+            
+            try {
+                const text = await file.text();
+                const importData = JSON.parse(text);
+                
+                if (importData.events && Array.isArray(importData.events)) {
+                    if (confirm(`確定要匯入 ${importData.events.length} 個事件嗎？這將會新增到您雲端的事件中。`)) {
+                        
+                        const eventsCollectionRef = collection(db, 'users', currentUserId, 'events');
+                        
+                        // 使用 Promise.all 來批次處理匯入
+                        const importPromises = [];
+                        for (const eventData of importData.events) {
+                            // 移除任何可能存在的 'id' 或 '__backendId'
+                            const { id, __backendId, ...newEventData } = eventData;
+                            
+                            // 確保有標題和日期
+                            if (newEventData.title && newEventData.date) {
+                                importPromises.push(addDoc(eventsCollectionRef, newEventData));
+                            }
+                        }
+                        
+                        await Promise.all(importPromises);
+                        
+                        showCustomAlert('匯入完成！');
+                        fileInput.value = '';
+                        // onSnapshot 會自動更新介面
+                    }
+                } else {
+                    showCustomAlert('檔案格式不正確！');
+                }
+            } catch (error) {
+                showCustomAlert('讀取檔案時發生錯誤：' + error.message);
+            }
+        }
+
+        // 顯示自訂提示框
+        function showCustomAlert(message) {
+            const alertModal = document.getElementById('alertModal');
+            document.getElementById('alertMessage').textContent = message;
+            alertModal.style.display = 'block';
+        }
+
+    </script>
+    <style>
+        :root {
+            /* 基本顏色 */
+            --color-white: #ffffff;
+            --color-black: #333333;
+            --color-grey-light: #f0f0f0;
+            --color-grey-mid: #dddddd;
+            --color-grey-dark: #666666;
+
+            /* 主要按鈕顏色 */
+            --color-primary: #2196f3;
+            --color-danger: #f44336;
+            --color-secondary: #666666;
+            
+            /* 事件顏色 */
+            --event-red: #ffcdd2;
+            --event-blue: #bbdefb;
+            --event-green: #c8e6c9;
+            --event-yellow: #fff9c4;
+            --event-purple: #e1bee7;
+            --event-orange: #ffccbc;
+            --event-pink: #f8bbd9;
+            --event-cyan: #b2ebf2;
+        }
+        
+        body {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Microsoft JhengHei', 'PingFang TC', 'Helvetica Neue', Arial, sans-serif;
+            height: 100vh; /* 改為 vh 確保佔滿視窗高度 */
+            overflow-x: hidden;
+            transition: all 0.3s ease;
+            display: flex; /* 使用 flex 佈局 */
+            flex-direction: column; /* 垂直排列 */
+        }
+
+        /* --- 主題樣式 --- */
+        /* 科技風 (預設) */
+        .theme-tech {
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            color: var(--color-white);
+            --theme-bg: linear-gradient(135deg, #1a1a2e, #16213e);
+            --theme-text: var(--color-white);
+            --theme-bg-trans-1: rgba(255, 255, 255, 0.1);
+            --theme-bg-trans-2: rgba(255, 255, 255, 0.2);
+            --theme-bg-trans-3: rgba(255, 255, 255, 0.3);
+            --theme-border: rgba(255, 255, 255, 0.15); /* 修正：新增清晰邊框 */
+            --theme-modal-bg: rgba(30, 40, 70, 0.95);
+            --theme-modal-text: var(--color-white);
+            --theme-input-bg: rgba(255, 255, 255, 0.1);
+            --theme-input-text: var(--color-white);
+            --theme-input-placeholder: rgba(255, 255, 255, 0.7);
+            --theme-sticky-bg: #2a2a4e;
+            --theme-sticky-text: var(--color-white);
+        }
+
+        /* 海洋風 */
+        .theme-ocean {
+            background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+            color: #0d47a1;
+            --theme-bg: linear-gradient(135deg, #e3f2fd, #bbdefb);
+            --theme-text: #0d47a1;
+            --theme-bg-trans-1: rgba(255, 255, 255, 0.3);
+            --theme-bg-trans-2: rgba(255, 255, 255, 0.5);
+            --theme-bg-trans-3: rgba(255, 255, 255, 0.7);
+            --theme-border: rgba(0, 0, 0, 0.1);
+            --theme-modal-bg: rgba(255, 255, 255, 0.98);
+            --theme-modal-text: var(--color-black);
+            --theme-input-bg: rgba(255, 255, 255, 0.7);
+            --theme-input-text: var(--color-black);
+            --theme-input-placeholder: rgba(0, 0, 0, 0.5);
+            --theme-sticky-bg: #fff9c4;
+            --theme-sticky-text: var(--color-black);
+        }
+
+        /* 春天風 */
+        .theme-spring {
+            background: linear-gradient(135deg, #fce4ec, #f8bbd9);
+            color: #880e4f;
+            --theme-bg: linear-gradient(135deg, #fce4ec, #f8bbd9);
+            --theme-text: #880e4f;
+            --theme-bg-trans-1: rgba(255, 255, 255, 0.3);
+            --theme-bg-trans-2: rgba(255, 255, 255, 0.5);
+            --theme-bg-trans-3: rgba(255, 255, 255, 0.7);
+            --theme-border: rgba(136, 14, 79, 0.15);
+            --theme-modal-bg: rgba(255, 255, 255, 0.98);
+            --theme-modal-text: var(--color-black);
+            --theme-input-bg: rgba(255, 255, 255, 0.7);
+            --theme-input-text: var(--color-black);
+            --theme-input-placeholder: rgba(0, 0, 0, 0.5);
+            --theme-sticky-bg: #fff9c4;
+            --theme-sticky-text: var(--color-black);
+        }
+
+        /* 草原風 */
+        .theme-meadow {
+            background: linear-gradient(135deg, #e8f5e9, #c8e6c9);
+            color: #1b5e20;
+            --theme-bg: linear-gradient(135deg, #e8f5e9, #c8e6c9);
+            --theme-text: #1b5e20;
+            --theme-bg-trans-1: rgba(255, 255, 255, 0.3);
+            --theme-bg-trans-2: rgba(255, 255, 255, 0.5);
+            --theme-bg-trans-3: rgba(255, 255, 255, 0.7);
+            --theme-border: rgba(27, 94, 32, 0.15);
+            --theme-modal-bg: rgba(255, 255, 255, 0.98);
+            --theme-modal-text: var(--color-black);
+            --theme-input-bg: rgba(255, 255, 255, 0.7);
+            --theme-input-text: var(--color-black);
+            --theme-input-placeholder: rgba(0, 0, 0, 0.5);
+            --theme-sticky-bg: #fff9c4;
+            --theme-sticky-text: var(--color-black);
+        }
+        /* --- 基礎結構 --- */
+        .container {
+            width: 100%;
+            max-width: 1400px; /* 稍微加寬以容納更多內容 */
+            margin: 0 auto;
+            padding: 15px; /* 縮小 padding，爭取空間 */
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1; /* 讓 container 填滿 body 剩餘空間 */
+            min-height: 0; /* 修正 flex 佈局在 Safari 的問題 */
+        }
+
+        /* --- 標題區域 --- */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px; /* 縮小 margin */
+            flex-wrap: wrap;
+            gap: 10px;
+            flex-shrink: 0; /* 不壓縮標題區域 */
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .calendar-title {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--theme-text);
+        }
+
+        /* 登入/登出區域 */
+        #loginBtn {
+            background: var(--color-primary);
+            color: var(--color-white);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+        #loginBtn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        #userInfo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--theme-bg-trans-1);
+            padding: 5px 10px;
+            border-radius: 25px;
+        }
+        #userPhoto {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 2px solid var(--theme-border);
+        }
+        #userName {
+            font-weight: bold;
+            font-size: 0.9rem;
+            color: var(--theme-text);
+        }
+        #logoutBtn {
+            background: var(--color-danger);
+            color: var(--color-white);
+            border: none;
+            padding: 5px 10px;
+            border-radius: 15px;
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+
+        .settings-btn {
+            background: var(--theme-bg-trans-2);
+            color: var(--theme-text);
+            border: none;
+            border-radius: 50%;
+            width: 45px;
+            height: 45px;
+            font-size: 1.5rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .settings-btn:hover {
+            background: var(--theme-bg-trans-3);
+            transform: rotate(90deg);
+        }
+
+        /* --- 導航 / 搜尋 --- */
+        .controls-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+            flex-shrink: 0; /* 不壓縮控制列 */
+        }
+        
+        .navigation {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .nav-btn {
+            background: var(--theme-bg-trans-2);
+            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            padding: 10px 15px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            color: var(--theme-text);
+        }
+
+        .nav-btn:hover {
+            background: var(--theme-bg-trans-3);
+            transform: translateY(-2px);
+        }
+
+        .month-year {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .month-select, .year-select {
+            background: var(--theme-input-bg);
+            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            padding: 10px 15px;
+            border-radius: 15px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            cursor: pointer;
+            color: var(--theme-input-text);
+            min-width: 100px;
+        }
+        /* 修正 Select 在不同主題的箭頭顏色 */
+        .theme-tech .month-select, .theme-tech .year-select {
+            filter: invert(1);
+        }
+
+
+        .search-container {
+            /* 移到 controls-bar 中 */
+        }
+
+        .search-input {
+            width: 100%;
+            max-width: 300px;
+            padding: 12px 20px;
+            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            border-radius: 25px;
+            background: var(--theme-input-bg);
+            color: var(--theme-input-text);
+            font-size: 1rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .search-input::placeholder {
+            color: var(--theme-input-placeholder);
+        }
+
+        /* --- 行事曆網格 --- */
+        .calendar-grid-container {
+            flex-grow: 1; /* 佔滿剩餘垂直空間 */
+            overflow-y: auto; /* 內容過多時滾動 */
+            min-height: 0; /* 修正 flex 佈局 */
+            border-radius: 15px;
+            background: var(--theme-bg-trans-1);
+            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            backdrop-filter: blur(10px);
+            padding: 10px;
+        }
+
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 5px; /* 增加格子間距 */
+        }
+
+        .day-header {
+            text-align: center;
+            font-weight: bold;
+            padding: 10px 5px;
+            font-size: 1.1rem;
+            color: var(--theme-text);
+            border-bottom: 2px solid var(--theme-border);
+        }
+
+        .day-header.saturday {
+            color: #2196f3;
+        }
+
+        .day-header.sunday {
+            color: #f44336;
+        }
+
+        .day-cell {
+            /* 使用者可自行修改日期格子最小高度 */
+            min-height: 140px; 
+            height: auto; /* 修正：讓高度自動延伸 */
+            background: var(--theme-bg-trans-1);
+            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            border-radius: 10px;
+            padding: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            color: var(--theme-text);
+        }
+
+        .day-cell:hover {
+            background: var(--theme-bg-trans-2);
+            transform: translateY(-2px);
+        }
+
+        .day-cell.today {
+            background: rgba(255, 193, 7, 0.3);
+            border: 2px solid #ffc107;
+        }
+
+        .day-cell.other-month {
+            opacity: 0.4;
+            background: transparent;
+            cursor: default;
+        }
+        .day-cell.other-month:hover {
+            background: transparent;
+            transform: none;
+        }
+
+
+        .day-number {
+            font-weight: bold;
+            font-size: 1.1rem;
+            margin-bottom: 5px;
+            flex-shrink: 0;
+        }
+
+        .events-container {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-height: 0; /* 修正 flex 佈局 */
+        }
+
+        .event-item {
+            color: var(--color-black);
+            padding: 3px 8px; /* 增加 padding */
+            margin: 1px 0;
+            border-radius: 12px;
+            font-size: 0.85rem; /* 稍微放大字體 */
+            cursor: pointer;
+            transition: all 0.2s ease;
+            
+            /* 修正：允許文字換行 */
+            word-wrap: break-word;
+            white-space: normal; 
+            line-height: 1.3;
+        }
+
+        .event-item:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        /* 事件顏色標籤 */
+        .event-red { background: var(--event-red) !important; }
+        .event-blue { background: var(--event-blue) !important; }
+        .event-green { background: var(--event-green) !important; }
+        .event-yellow { background: var(--event-yellow) !important; }
+        .event-purple { background: var(--event-purple) !important; }
+        .event-orange { background: var(--event-orange) !important; }
+        .event-pink { background: var(--event-pink) !important; }
+        .event-cyan { background: var(--event-cyan) !important; }
+
+        /* --- 模態框 (Modal) --- */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            backdrop-filter: blur(5px);
+        }
+
+        .modal-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: var(--theme-modal-bg);
+            color: var(--theme-modal-text);
+            padding: 30px;
+            border-radius: 20px;
+            width: 90%;
+            max-width: 500px;
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--theme-border); /* 修正：加入邊框 */
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 1.8rem;
+            cursor: pointer;
+            color: var(--theme-modal-text);
+            opacity: 0.7;
+        }
+        .close-btn:hover {
+            opacity: 1;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .form-group input[type="text"], 
+        .form-group textarea, 
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--color-grey-mid);
+            border-radius: 10px;
+            font-size: 1rem;
+            box-sizing: border-box;
+            background: var(--color-grey-light);
+            color: var(--color-black);
+        }
+
+        .form-group textarea {
+            height: 100px;
+            resize: vertical;
+        }
+
+        .color-picker {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 5px;
+        }
+
+        .color-option {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 3px solid transparent;
+            transition: all 0.2s ease;
+        }
+
+        .color-option.selected {
+            border-color: var(--theme-modal-text);
+            transform: scale(1.2);
+        }
+
+        .emoji-picker {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            margin-top: 5px;
+        }
+
+        .emoji-option {
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 5px;
+            transition: all 0.2s ease;
+        }
+
+        .emoji-option:hover, .emoji-option.selected {
+            background: rgba(0, 0, 0, 0.1);
+            transform: scale(1.2);
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: var(--color-primary);
+            color: white;
+        }
+
+        .btn-danger {
+            background: var(--color-danger);
+            color: white;
+        }
+
+        .btn-secondary {
+            background: var(--color-secondary);
+            color: white;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        /* --- 便利貼 (Sticky Note) --- */
+        .sticky-note {
+            position: fixed;
+            background: var(--theme-sticky-bg, #ffeb3b);
+            color: var(--theme-sticky-text, #333);
+            padding: 15px;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            z-index: 999;
+            cursor: move;
+            min-width: 200px;
+            max-width: 300px;
+            font-family: 'Comic Sans MS', 'Microsoft JhengHei', cursive;
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+
+        .sticky-note-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            font-weight: bold;
+            padding-bottom: 5px;
+            border-bottom: 1px dashed rgba(0,0,0,0.2);
+        }
+
+        .sticky-note-controls {
+            display: flex;
+            gap: 5px;
+        }
+
+        .sticky-note-btn,
+        .sticky-note-close {
+            background: rgba(0,0,0,0.1);
+            color: inherit;
+            border: none;
+            border-radius: 50%;
+            width: 25px;
+            height: 25px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s ease;
+            line-height: 25px; /* 垂直置中 */
+            text-align: center;
+        }
+        .sticky-note-close {
+            background: var(--color-danger);
+            color: white;
+        }
+        .sticky-note-btn:hover {
+            background: rgba(0,0,0,0.2);
+        }
+        .sticky-note-close:hover {
+            opacity: 0.8;
+        }
+
+        .sticky-note-content {
+            word-wrap: break-word;
+            white-space: pre-wrap; /* 保留換行 */
+        }
+
+
+        /* --- 設定面板 --- */
+        .settings-panel {
+            display: none;
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: 300px;
+            height: 100%;
+            background: var(--theme-modal-bg);
+            color: var(--theme-modal-text);
+            backdrop-filter: blur(20px);
+            z-index: 1001;
+            padding: 20px;
+            overflow-y: auto;
+            border-left: 1px solid var(--theme-border);
+            box-shadow: -5px 0 15px rgba(0,0,0,0.2);
+        }
+
+        .theme-option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .theme-option:hover {
+            background: rgba(0, 0, 0, 0.1);
+        }
+
+        .theme-preview {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            border: 1px solid var(--theme-border);
+        }
+
+        .export-section, .import-section {
+            margin: 20px 0;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.05);
+            border-radius: 10px;
+        }
+
+        /* --- 自訂提示框 (Alert Modal) --- */
+        #alertModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1002;
+            backdrop-filter: blur(5px);
+        }
+        #alertModal .modal-content {
+            max-width: 400px;
+            text-align: center;
+        }
+        #alertMessage {
+            font-size: 1.1rem;
+            margin-bottom: 20px;
+        }
+
+        /* --- 響應式設計 --- */
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+                height: auto; /* 修正：手機上高度自動 */
+            }
+            
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .header-left {
+                width: 100%;
+                justify-content: space-between;
+            }
+            .header-right {
+                width: 100%;
+            }
+            #loginBtn, #userInfo {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .controls-bar {
+                flex-direction: column;
+                gap: 15px;
+            }
+            .search-input {
+                max-width: 100%;
+            }
+
+            .calendar-title {
+                font-size: 1.5rem;
+            }
+
+            /* 修正：在手機上使用 flex-grow: 1 會導致問題，改用 min-height */
+            .calendar-grid-container {
+                flex-grow: 0; 
+                min-height: 500px; /* 給一個最小高度 */
+                overflow-y: auto;
+            }
+
+            .day-cell {
+                min-height: 100px; /* 手機上格子小一點 */
+                padding: 5px;
+            }
+            .day-number {
+                font-size: 1rem;
+            }
+            .event-item {
+                font-size: 0.75rem;
+                padding: 2px 5px;
+            }
+            
+            .modal-content {
+                width: 95%;
+                padding: 20px;
+            }
+            
+            .settings-panel {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body class="theme-tech">
+
+    <div class="container">
+        
+        <!-- 標題區域 -->
+        <div class="header">
+            <div class="header-left">
+                <h1 class="calendar-title" id="calendarTitle">📅 班級行事曆</h1>
+                <button class="nav-btn" onclick="goToToday()">📍 今天</button>
+            </div>
+            <div class="header-right">
+                <!-- 登入/登出區域 -->
+                <button id="loginBtn" onclick="loginWithGoogle()">🚀 使用 Google 登入</button>
+                <div id="userInfo" style="display: none;">
+                    <img id="userPhoto" src="" alt="User">
+                    <span id="userName"></span>
+                    <button id="logoutBtn" onclick="logout()">登出</button>
+                </div>
+                <button class="settings-btn" onclick="toggleSettings()">⚙️</button>
+            </div>
+        </div>
+
+        <!-- 導航 / 搜尋 -->
+        <div class="controls-bar">
+            <!-- 導航區域 -->
+            <div class="navigation">
+                <button class="nav-btn" onclick="previousMonth()">⬅️ 上個月</button>
+                <div class="month-year">
+                    <select class="month-select" id="monthSelect" onchange="changeMonth()">
+                        <option value="0">1月</option> <option value="1">2月</option> <option value="2">3月</option>
+                        <option value="3">4月</option> <option value="4">5月</option> <option value="5">6月</option>
+                        <option value="6">7月</option> <option value="7">8月</option> <option value="8">9月</option>
+                        <option value="9">10月</option> <option value="10">11月</option> <option value="11">12月</option>
+                    </select>
+                    <select class="year-select" id="yearSelect" onchange="changeYear()"></select>
+                </div>
+                <button class="nav-btn" onclick="nextMonth()">下個月 ➡️</button>
+            </div>
+            <!-- 搜尋區域 -->
+            <div class="search-container">
+                <input type="text" class="search-input" id="searchInput" placeholder="🔍 搜尋事件..." oninput="searchEvents()">
+            </div>
+        </div>
+
+        <!-- 行事曆網格 (容器) -->
+        <div class="calendar-grid-container">
+            <div class="calendar-grid" id="calendarGrid">
+                <!-- 星期標題 -->
+                <div class="day-header">一</div>
+                <div class="day-header">二</div>
+                <div class="day-header">三</div>
+                <div class="day-header">四</div>
+                <div class="day-header">五</div>
+                <div class="day-header saturday">六</div>
+                <div class="day-header sunday">日</div>
+                <!-- 日期格子將由 JS 動態生成 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 新增/編輯事件模態框 -->
+    <div class="modal" id="eventModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">📝 新增事件</h3>
+                <button class="close-btn" onclick="closeModal()">×</button>
+            </div>
+            <form id="eventForm">
+                <div class="form-group">
+                    <label for="eventTitle">📋 事件標題：</label>
+                    <input type="text" id="eventTitle" required>
+                </div>
+                <div class="form-group">
+                    <label for="eventContent">📄 事件內容：</label>
+                    <textarea id="eventContent"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>🎨 顏色標籤：</label>
+                    <div class="color-picker">
+                        <div class="color-option" style="background: var(--event-red)" data-color="red"></div>
+                        <div class="color-option" style="background: var(--event-blue)" data-color="blue"></div>
+                        <div class="color-option" style="background: var(--event-green)" data-color="green"></div>
+                        <div class="color-option" style="background: var(--event-yellow)" data-color="yellow"></div>
+                        <div class="color-option" style="background: var(--event-purple)" data-color="purple"></div>
+                        <div class="color-option" style="background: var(--event-orange)" data-color="orange"></div>
+                        <div class="color-option" style="background: var(--event-pink)" data-color="pink"></div>
+                        <div class="color-option" style="background: var(--event-cyan)" data-color="cyan"></div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>😊 表情符號：</label>
+                    <div class="emoji-picker">
+                        <span class="emoji-option" data-emoji="">無</span> <span class="emoji-option" data-emoji="📚">📚</span>
+                        <span class="emoji-option" data-emoji="💉">💉</span> <span class="emoji-option" data-emoji="🎉">🎉</span>
+                        <span class="emoji-option" data-emoji="📝">📝</span> <span class="emoji-option" data-emoji="🏃">🏃</span>
+                        <span class="emoji-option" data-emoji="🎭">🎭</span> <span class="emoji-option" data-emoji="🍎">🍎</span>
+                        <span class="emoji-option" data-emoji="⚽">⚽</span> <span class="emoji-option" data-emoji="🎵">🎵</span>
+                        <span class="emoji-option" data-emoji="🔬">🔬</span> <span class="emoji-option" data-emoji="🎨">🎨</span>
+                    </div>
+                </div>
+                <div class="btn-group">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+                    <button type="button" class="btn btn-danger" id="deleteBtn" onclick="deleteEvent()" style="display: none;">刪除</button>
+                    <button type="submit" class="btn btn-primary">儲存</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 設定面板 -->
+    <div class="settings-panel" id="settingsPanel">
+        <h3>⚙️ 設定</h3>
+        <h4>🎨 主題風格</h4>
+        <div class="theme-option" onclick="changeTheme('tech')">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #1a1a2e, #16213e);"></div><span>🖥️ 科技風</span>
+        </div>
+        <div class="theme-option" onclick="changeTheme('ocean')">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #e3f2fd, #bbdefb);"></div><span>🌊 海洋風</span>
+        </div>
+        <div class="theme-option" onclick="changeTheme('spring')">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #fce4ec, #f8bbd9);"></div><span>🌸 春天風</span>
+        </div>
+        <div class="theme-option" onclick="changeTheme('meadow')">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #e8f5e8, #c8e6c9);"></div><span>🌿 草原風</span>
+        </div>
+        
+        <div class="export-section">
+            <h4>📤 匯出資料</h4>
+            <button class="btn btn-primary" onclick="exportData('all')" style="margin: 5px; width: 100%;">匯出全部</button>
+            <button class="btn btn-primary" onclick="exportData('year')" style="margin: 5px; width: 100%;">匯出該年</button>
+            <button class="btn btn-primary" onclick="exportData('month')" style="margin: 5px; width: 100%;">匯出該月</button>
+            <button class="btn btn-primary" onclick="exportCustomRange()" style="margin: 5px; width: 100%;">自訂範圍</button>
+        </div>
+        
+        <div class="import-section">
+            <h4>📥 匯入資料</h4>
+            <input type="file" id="importFile" accept=".json" style="margin-bottom: 10px; width: 100%;">
+            <button class="btn btn-secondary" onclick="importData()" style="width: 100%;">匯入檔案</button>
+        </div>
+        
+        <button class="btn btn-secondary" onclick="toggleSettings()" style="width: 100%; margin-top: 20px;">關閉設定</button>
+    </div>
+
+    <!-- 自訂提示框 (Alert Modal) -->
+    <div class="modal" id="alertModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>🔔 系統提示</h3>
+                <button class="close-btn close-alert">×</button>
+            </div>
+            <p id="alertMessage">這是一條提示訊息。</p>
+            <div class="btn-group">
+                <button type="button" class="btn btn-primary close-alert">我知道了</button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
