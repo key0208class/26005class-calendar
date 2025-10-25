@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>班級行事曆 v1.2.0 (Firebase 公開版)</title>
+    <!-- (v1.3.0) 更新版本號 -->
+    <title>班級行事曆 v1.3.0 (Firebase 公開版)</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -71,6 +72,14 @@
 
         // 初始化
         document.addEventListener('DOMContentLoaded', function() {
+            // (v1.3.0) 載入儲存的主題
+            const savedTheme = localStorage.getItem('calendarTheme');
+            if (savedTheme) {
+                document.body.className = savedTheme;
+            } else {
+                document.body.className = 'theme-tech'; // 預設主題
+            }
+            
             // 初始化年份選擇器
             initYearSelect();
             
@@ -215,6 +224,13 @@
                     closeModal();
                 }
             });
+            
+            // (v1.3.0) 點擊自訂匯出模態框外部關閉
+            document.getElementById('customExportModal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    closeCustomExportModal();
+                }
+            });
 
             // 關閉自訂提示框
             document.getElementById('alertModal').addEventListener('click', function(e) {
@@ -264,7 +280,7 @@
             }
 
             // 添加下個月的日期以填滿網格
-            const targetCells = 42; // 固定 6 週 (42 格) 佈局
+            const targetCells = 35; // 固定 5 週 (35 格) 佈局
             const totalCells = grid.children.length - 7; // 減去星期標題
             let remainingCells = targetCells - totalCells;
             
@@ -319,22 +335,16 @@
                     eventsContainer.appendChild(eventElement);
                 });
 
-                // (需求修改) 點擊日期 "數字" 新增事件
+                // (v1.3.0) 點擊日期 "數字" 新增事件 (僅限管理員)
                 dayNumber.onclick = (e) => {
                     e.stopPropagation(); // 防止觸發到 sticky note 的關閉事件
-                    if (!isAdmin) {
-                        showCustomAlert("您沒有編輯權限。請使用管理員帳號登入。");
-                        return;
+                    if (isAdmin) {
+                        openEventModal(dateStr);
                     }
-                    openEventModal(dateStr);
+                    // (v1.3.0) 一般使用者點擊無反應，不跳提示
                 };
                 
-                // (需求修改) 點擊方格空白處無效，但若為管理員應提示
-                cell.onclick = () => {
-                    if (isAdmin) {
-                        showCustomAlert("請點擊日期數字來新增事件。");
-                    }
-                };
+                // (v1.3.0) 點擊方格空白處無任何動作 (已移除 cell.onclick)
 
             } else if (isOtherMonth) {
                 // (需求修改) 讓數字也可以點擊
@@ -612,7 +622,11 @@
 
         // 主題切換
         window.changeTheme = (theme) => {
-            document.body.className = `theme-${theme}`;
+            // (v1.3.0) 統一 theme 變數為 class 名稱
+            const themeClassName = `theme-${theme}`;
+            document.body.className = themeClassName;
+            // (v1.3.0) 儲存主題偏好
+            localStorage.setItem('calendarTheme', themeClassName);
         }
 
         // 設定面板
@@ -621,7 +635,7 @@
             panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
         }
 
-        // 匯出功能 (僅限管理員)
+        // (v1.3.0) 匯出功能 (依當前頁面匯出)
         window.exportData = (type) => {
             if (!isAdmin) {
                 showCustomAlert("僅限管理員才能匯出資料！");
@@ -636,12 +650,14 @@
                     dataToExport = events;
                     break;
                 case 'year':
+                    // (v1.3.0) 依據 currentYear 匯出
                     dataToExport = events.filter(event => {
                         const eventYear = new Date(event.date).getFullYear();
                         return eventYear === currentYear;
                     });
                     break;
                 case 'month':
+                    // (v1.3.0) 依據 currentYear 和 currentMonth 匯出
                     dataToExport = events.filter(event => {
                         const eventDate = new Date(event.date);
                         return eventDate.getFullYear() === currentYear && 
@@ -661,16 +677,49 @@
             
             downloadJson(exportFile, `班級行事曆_${type}_${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}.json`);
         }
+        
+        // (v1.3.0) 格式化日期為 YYYY-MM-DD
+        function formatDateYYYYMMDD(date) {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        }
 
+        // (v1.3.0) 開啟自訂匯出模態框
+        window.openCustomExportModal = () => {
+            if (!isAdmin) {
+                showCustomAlert("僅限管理員才能匯出資料！");
+                return;
+            }
+            
+            // (v1.3.0) 預設日期：結束為今天，開始為一個月前
+            const endDate = new Date(); // 使用今天
+            const startDate = new Date();
+            startDate.setMonth(startDate.getMonth() - 1); // 往前推一個月
+
+            document.getElementById('exportStartDate').value = formatDateYYYYMMDD(startDate);
+            document.getElementById('exportEndDate').value = formatDateYYYYMMDD(endDate);
+            
+            document.getElementById('customExportModal').style.display = 'block';
+        }
+
+        // (v1.3.0) 關閉自訂匯出模態框
+        window.closeCustomExportModal = () => {
+            document.getElementById('customExportModal').style.display = 'none';
+        }
+        
+        // (v1.3.0) 匯出自訂範圍 (從模態框讀取)
         window.exportCustomRange = () => {
             if (!isAdmin) {
                 showCustomAlert("僅限管理員才能匯出資料！");
                 return;
             }
-            const startDate = prompt('請輸入開始日期 (YYYY-MM-DD):');
-            const endDate = prompt('請輸入結束日期 (YYYY-MM-DD):');
+            // 從模態框讀取日期
+            const startDate = document.getElementById('exportStartDate').value;
+            const endDate = document.getElementById('exportEndDate').value;
             
-            if (startDate && endDate) {
+            if (startDate && endDate && endDate >= startDate) {
                 const dataToExport = events.filter(event => {
                     return event.date >= startDate && event.date <= endDate;
                 });
@@ -686,8 +735,13 @@
                 };
                 
                 downloadJson(exportFile, `班級行事曆_自訂範圍_${startDate}_${endDate}.json`);
+                closeCustomExportModal(); // 匯出後關閉
+            } else {
+                showCustomAlert('請輸入有效的日期範圍！ (結束日期必須大於或等於開始日期)');
             }
         }
+        
+        // (v1.3.0) 舊的 exportCustomRange (prompt版本) 已被移除
 
         function downloadJson(data, filename) {
             const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
@@ -731,7 +785,7 @@
                             const { id, ...newEventData } = eventData;
                             
                             // 確保有標題和日期
-                            if (newEventData.title && newEventData.date) {
+                            if (newEventData.title && newData.date) {
                                 importPromises.push(addDoc(eventsCollectionRef, newEventData));
                             }
                         }
@@ -817,6 +871,7 @@
             --theme-sticky-bg: #2a2a4e;
             --theme-sticky-text: var(--color-white);
             --theme-event-text: var(--color-white); /* (修正) 事件文字顏色 */
+            --theme-color-scheme: dark; /* (v1.3.0) 日期輸入框配色 */
         }
 
         /* 海洋風 */
@@ -839,6 +894,7 @@
             --theme-sticky-bg: #fff9c4;
             --theme-sticky-text: var(--color-black);
             --theme-event-text: var(--color-black); /* (修正) 事件文字顏色 */
+            --theme-color-scheme: light; /* (v1.3.0) 日期輸入框配色 */
         }
 
         /* 春天風 */
@@ -861,6 +917,7 @@
             --theme-sticky-bg: #fff9c4;
             --theme-sticky-text: var(--color-black);
             --theme-event-text: var(--color-black); /* (修正) 事件文字顏色 */
+            --theme-color-scheme: light; /* (v1.3.0) 日期輸入框配色 */
         }
 
         /* 草原風 */
@@ -883,6 +940,7 @@
             --theme-sticky-bg: #fff9c4;
             --theme-sticky-text: var(--color-black);
             --theme-event-text: var(--color-black); /* (修正) 事件文字顏色 */
+            --theme-color-scheme: light; /* (v1.3.0) 日期輸入框配色 */
         }
         
         /* --- 基礎結構 --- */
@@ -1079,7 +1137,7 @@
             border: 1px solid var(--theme-border);
             border-radius: 10px;
             padding: 8px;
-            /* cursor: pointer; (移除) 改由 day-number 觸發 */
+            /* cursor: pointer; (v1.3.0 移除) 改由 day-number 觸發 */
             transition: all 0.3s ease;
             position: relative;
             display: flex;
@@ -1143,7 +1201,8 @@
             padding: 3px 8px;
             margin: 1px 0;
             border-radius: 12px;
-            font-size: 0.85rem;
+             /* (v1.3.0) (可自行修改) 日期方格中，事件標題的顯示大小 */
+            font-size: 1.2rem;
             cursor: pointer;
             transition: all 0.2s ease;
             word-wrap: break-word;
@@ -1235,7 +1294,8 @@
         /* (修正) 模態框內的輸入框樣式 */
         .form-group input[type="text"], 
         .form-group textarea, 
-        .form-group select {
+        .form-group select,
+        .form-group input[type="date"] { /* (v1.3.0) 增加 date input */
             width: 100%;
             padding: 10px;
             border: 1px solid var(--theme-border); /* 修正邊框 */
@@ -1249,10 +1309,16 @@
         .form-group textarea::placeholder {
              color: var(--theme-input-placeholder);
         }
+        
+        /* (v1.3.0) 修正日期輸入框在不同主題下的配色 */
+        .form-group input[type="date"] {
+            color-scheme: var(--theme-color-scheme, light dark);
+        }
 
 
         .form-group textarea {
-            height: 100px;
+            /* (v1.3.0) (可自行修改) 管理員編輯事件 "事件內容" 的預設高度 */
+            height: 150px;
             resize: vertical;
         }
 
@@ -1498,6 +1564,25 @@
             display: none;
         }
 
+        /* (v1.3.0) 設定面板 2x2 網格佈局 */
+        .settings-grid-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        
+        .settings-grid-item {
+            display: flex; /* 讓按鈕/選項垂直堆疊 */
+            flex-direction: column;
+            gap: 5px; /* 項目之間的間距 */
+        }
+        
+        /* (v1.3.0) 確保網格內的按鈕填滿寬度 */
+        .settings-grid-item .btn {
+            width: 100%;
+            margin: 0; /* 移除舊的 margin */
+        }
+
 
         .theme-option {
             display: flex;
@@ -1508,6 +1593,8 @@
             border-radius: 10px;
             cursor: pointer;
             transition: all 0.2s ease;
+            /* (v1.3.0) 確保在網格中大小一致 */
+            margin: 0;
         }
 
         .theme-option:hover {
@@ -1537,6 +1624,9 @@
         .export-section h4, .import-section h4 {
             border-bottom: 1px solid var(--theme-border);
             padding-bottom: 5px;
+            /* (v1.3.0) 確保標題在網格佈局上 */
+            grid-column: 1 / -1; 
+            margin-bottom: 5px;
         }
         
         .import-section input[type="file"] {
@@ -1636,7 +1726,8 @@
                 font-size: 1rem;
             }
             .event-item {
-                font-size: 0.75rem;
+                /* (v1.3.0) 手機板字體大小調整 */
+                font-size: 0.8rem;
                 padding: 2px 5px;
             }
             
@@ -1661,11 +1752,17 @@
             .search-input {
                 width: 120px; /* (可自行修改) 最小手機版搜尋框寬度 */
             }
+            
+            /* (v1.3.0) 手機板設定網格改回單欄 */
+            .settings-grid-container {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
 
-<body class="theme-tech">
+<!-- (v1.3.0) body class 會由 JS 動態設定 -->
+<body>
 
     <div class="container">
         
@@ -1735,6 +1832,7 @@
                 </div>
                 <div class="form-group">
                     <label for="eventContent">📄 事件內容：</label>
+                    <!-- (v1.3.0) "事件內容" 高度已在 <style> 中被 CSS ( .form-group textarea ) 鎖定，可至該處修改 -->
                     <textarea id="eventContent"></textarea>
                 </div>
                 <div class="form-group">
@@ -1771,10 +1869,36 @@
             </form>
         </div>
     </div>
+    
+    <!-- (v1.3.0) 自訂匯出日期範圍模態框 -->
+    <div class="modal" id="customExportModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>🗓️ 自訂匯出範圍</h3>
+                <button class="close-btn" onclick="closeCustomExportModal()">×</button>
+            </div>
+            <form id="customExportForm" onsubmit="event.preventDefault(); exportCustomRange();">
+                <div class="form-group">
+                    <label for="exportStartDate">開始日期：</label>
+                    <input type="date" id="exportStartDate" required>
+                </div>
+                <div class="form-group">
+                    <label for="exportEndDate">結束日期：</label>
+                    <input type="date" id="exportEndDate" required>
+                </div>
+                <div class="btn-group">
+                    <button type="button" class="btn btn-secondary" onclick="closeCustomExportModal()">取消</button>
+                    <!-- (v1.3.0) 修改 type 為 submit 或 button 均可，已由 form onsubmit 處理 -->
+                    <button type="button" class="btn btn-primary" onclick="exportCustomRange()">確認匯出</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
 
     <!-- 設定面板 -->
     <div class="settings-panel" id="settingsPanel">
-        <h3>⚙️ 設定</h3>
+        <!-- (v1.3.0) 移除 '⚙️ 設定' 標題，使整體上移 -->
         
         <!-- (新增) 登入區域 -->
         <div class="login-section">
@@ -1789,25 +1913,39 @@
         </div>
 
         <h4>🎨 主題風格</h4>
-        <div class="theme-option" onclick="changeTheme('tech')">
-            <div class="theme-preview" style="background: linear-gradient(135deg, #1a1a2e, #16213e);"></div><span>🖥️ 科技風</span>
-        </div>
-        <div class="theme-option" onclick="changeTheme('ocean')">
-            <div class="theme-preview" style="background: linear-gradient(135deg, #e3f2fd, #bbdefb);"></div><span>🌊 海洋風</span>
-        </div>
-        <div class="theme-option" onclick="changeTheme('spring')">
-            <div class="theme-preview" style="background: linear-gradient(135deg, #fce4ec, #f8bbd9);"></div><span>🌸 春天風</span>
-        </div>
-        <div class="theme-option" onclick="changeTheme('meadow')">
-            <div class="theme-preview" style="background: linear-gradient(135deg, #e8f5e8, #c8e6c9);"></div><span>🌿 草原風</span>
+        <!-- (v1.3.0) 改為 2x2 網格 -->
+        <div class="settings-grid-container">
+            <div class="theme-option" onclick="changeTheme('tech')">
+                <div class="theme-preview" style="background: linear-gradient(135deg, #1a1a2e, #16213e);"></div><span>🖥️ 科技風</span>
+            </div>
+            <div class="theme-option" onclick="changeTheme('ocean')">
+                <div class="theme-preview" style="background: linear-gradient(135deg, #e3f2fd, #bbdefb);"></div><span>🌊 海洋風</span>
+            </div>
+            <div class="theme-option" onclick="changeTheme('spring')">
+                <div class="theme-preview" style="background: linear-gradient(135deg, #fce4ec, #f8bbd9);"></div><span>🌸 春天風</span>
+            </div>
+            <div class="theme-option" onclick="changeTheme('meadow')">
+                <div class="theme-preview" style="background: linear-gradient(135deg, #e8f5e8, #c8e6c9);"></div><span>🌿 草原風</span>
+            </div>
         </div>
         
         <div class="export-section">
             <h4>📤 匯出資料 (僅限管理員)</h4>
-            <button class="btn btn-primary" onclick="exportData('all')" style="margin: 5px; width: 100%;">匯出全部</button>
-            <button class="btn btn-primary" onclick="exportData('year')" style="margin: 5px; width: 100%;">匯出該年</button>
-            <button class="btn btn-primary" onclick="exportData('month')" style="margin: 5px; width: 100%;">匯出該月</button>
-            <button class="btn btn-primary" onclick="exportCustomRange()" style="margin: 5px; width: 100%;">自訂範圍</button>
+            <!-- (v1.3.0) 改為 2x2 網格，並修改文字與 '自訂' 的 onclick -->
+            <div class="settings-grid-container">
+                <div class="settings-grid-item">
+                    <button class="btn btn-primary" onclick="exportData('all')">全部</button>
+                </div>
+                <div class="settings-grid-item">
+                    <button class="btn btn-primary" onclick="exportData('year')">該年</button>
+                </div>
+                <div class="settings-grid-item">
+                    <button class="btn btn-primary" onclick="exportData('month')">該月</button>
+                </div>
+                <div class="settings-grid-item">
+                    <button class="btn btn-primary" onclick="openCustomExportModal()">自訂</button>
+                </div>
+            </div>
         </div>
         
         <div class="import-section">
@@ -1816,7 +1954,8 @@
             <button class="btn btn-secondary" onclick="importData()" style="width: 100%;">匯入檔案</button>
         </div>
         
-        <button class="btn btn-secondary" onclick="toggleSettings()" style="width: 100%; margin-top: 20px;">關閉設定</button>
+        <!-- (v1.3.0) "關閉設定" 按鈕上移 (調整 margin-top) -->
+        <button class="btn btn-secondary" onclick="toggleSettings()" style="width: 100%; margin-top: 10px;">關閉設定</button>
     </div>
 
     <!-- 自訂提示框 (Alert Modal) -->
