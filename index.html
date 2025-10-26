@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>雲教室行事曆 v1.1.0</title>
+    <title>雲教室行事曆 v1.2.0</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -1314,6 +1314,9 @@
         // (v1.8.0) 真正呼叫 Gemini API 的函式 (核心)
        // (v1.8.0) 真正呼叫 Gemini API 的函式 (核心) - (v1.8.1 升級模型)
         // (v1.8.0) 真正呼叫 Gemini API 的函式 (核心) - (v1.8.2 移除日期過濾)
+        // (v1.8.0) 真正呼叫 Gemini API 的函式 (核心) - (v1.8.1 升級模型)
+       // (v1.8.0) 真正呼叫 Gemini API 的函式 (核心) - (v1.8.2 移除日期過濾)
+       // (v1.2.0) 修正 AI Prompt (標題規則) 並移除 10 字限制
         async function callGeminiApi(text, imageParts) {
             if (!userAiApiKey) {
                 throw new Error("API Key 未設定。");
@@ -1323,6 +1326,7 @@
             const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${userAiApiKey}`;
             
             // (v1.8.2) (可自行修改) AI 系統提示 (Prompt) - 移除了「未來」和「不要抓取過去」的限制
+            // (v1.2.0) 優化標題規則 (規則 4)
             const systemPrompt = `你是一位專業的活動助理，你的任務是從使用者提供的任何文字、圖片或 PDF 內容中，找出「所有可辨識的」活動、行程或待辦事項 (無論是過去、現在或未來的事件)。
 
 你的目標是將這些資訊轉換為一個 JSON 陣列，每個物件代表一個「獨立的」活動。
@@ -1332,7 +1336,7 @@
 JSON 結構：
 [
   {
-    "title": "活動標題 (簡潔明瞭)",
+    "title": "活動標題 (精簡！抓取核心主題，例如 'Edcafe研習' 或 'Canva教學')",
     "date": "YYYY-MM-DD (必須是這個格式！)",
     "time": "HH:MM (24小時制) 或 '全天' (如果沒有具體時間)",
     "location": "地點 (如果有的話)",
@@ -1353,6 +1357,9 @@ JSON 結構：
     * 時間「必須」是 HH:MM 格式或 "全天"。
     * 描述 (description) 請使用條列式 (用 \n 換行) 總結重點。
     * Emoji「必須」只提供一個相關的表情符號。
+4.  (v1.2.0) **標題規則 (重要！)**：
+    * 標題應精簡，專注於「核心活動名稱」。例如，"【教育版 ChatGPT - Edcafe AI 簡單好用研習】" 應簡化為 "Edcafe AI 研習"。
+    * 標題「絕對禁止」包含 "..." (刪節號)。
 `;
 
             // (v1.8.1) 組合傳送的 parts (適用於所有多模態模型)
@@ -1416,29 +1423,23 @@ JSON 結構：
                 const cleanJsonText = jsonText.replace(/^```json\s*|```\s*$/g, '');
                 const parsedData = JSON.parse(cleanJsonText);
                 
-                // (v1.1.0) 實作標題簡化邏輯 (依據新規則 2 & 5)
+                // (v1.2.0) 實作標題簡化邏輯 (移除 10 字限制)
                 return parsedData.map((item, index) => {
                     
-                    // (v1.1.0) 規則 5：簡化標題 (0-10字)
-                    let simpleTitle = item.title;
-                    if (simpleTitle.length > 10) {
-                        simpleTitle = simpleTitle.substring(0, 10) + '…';
-                    }
+                    // (v1.2.0) 規則 2 (Problem 2a): 移除 10 字截斷。
+                    // AI 會依照新 Prompt (規則 4) 給予 "Edcafe AI 研習"
+                    let simpleTitle = item.title; 
 
-                    // (v1.1.0) 規則 2：組合顯示標題
+                    // (v1.2.0) 規則 2：組合顯示標題
                     // 只有在 time 存在且不是 '全天' 時，才加上 [HH:MM]
-                    let displayTitle = simpleTitle;
+                    let displayTitle = simpleTitle; // 預設 (e.g., "Edcafe AI 研習")
                     if (item.time && item.time !== '全天') {
                         // 確保時間格式是 HH:MM (例如 AI 可能只給 19:00)
                         const timeParts = item.time.split(':');
                         const hours = timeParts[0] ? timeParts[0].padStart(2, '0') : '00';
                         const minutes = timeParts[1] ? timeParts[1].padEnd(2, '0') : '00';
-                        displayTitle = `[${hours}:${minutes}] ${simpleTitle}`;
+                        displayTitle = `[${hours}:${minutes}] ${simpleTitle}`; // 變成 (e.g., "[19:00] Edcafe AI 研習")
                     }
-                    
-                    // (v1.1.0) 檢查是否有連續日期 (規則 4)
-                    // 目前的 AI Prompt (v1.8.2) 只有要求 "date": "YYYY-MM-DD"
-                    // 我們先假設 AI 辨識的都是單日事件，使用者可在介面上手動修改範圍
                     
                     const eventDate = item.date || new Date().toISOString().split('T')[0]; // 預防 AI 漏給日期
 
@@ -1452,9 +1453,12 @@ JSON 結構：
                         originalLocation: item.location || '',
                         originalDescription: item.description || '',
                         
-                        // (v1.1.0) 顯示與編輯用的資料
-                        displayTitle: displayTitle,    // 用於卡片標題 (會動態更新)
-                        simplifiedTitle: simpleTitle,  // 簡化標題 (用於編輯器預設值)
+                        // (v1.2.0) 
+                        // displayTitle: [19:00] Edcafe AI 研習
+                        // simplifiedTitle: Edcafe AI 研習
+                        // 我們在下一步會修正，讓 input 框使用 displayTitle
+                        displayTitle: displayTitle,
+                        simplifiedTitle: simpleTitle, // 仍然是沒有 [HH:MM] 的版本
                         
                         // (v1.1.0) 規則 5：使用 AI 的 emoji，預設為 💡
                         emoji: item.emoji || '💡', 
@@ -1522,15 +1526,14 @@ JSON 結構：
             });
         }
 
-        // (v1.1.0) 渲染 AI 辨識結果到畫面上 (全新介面)
+     // (v1.2.0) 渲染 AI 辨識結果 (修正 BUG 1, 3)
         function renderAiResults(parsedEvents) {
             const resultsContainer = document.getElementById('aiResultsContainer');
             const importAllBtn = document.getElementById('importAllAiBtn');
             resultsContainer.innerHTML = '';
 
             if (parsedEvents.length === 0) {
-                // (可自行修改) AI 找不到內容的提示文字
-                // (v1.8.2) 移除了「未來」的限制，修正提示文字
+                // (v1.2.0) 修正提示文字
                 resultsContainer.innerHTML = '<div class="ai-no-result">喔喔！在您提供的內容中找不到可辨識的活動資訊。</div>';
                 importAllBtn.style.display = 'none';
                 return;
@@ -1538,18 +1541,14 @@ JSON 結構：
 
             importAllBtn.style.display = 'inline-block';
             
-            // (v1.1.0) 注意：由於介面複雜化，"全部匯入"按鈕現在只是一個觸發器
-            // 它會觸發下面所有卡片的 "匯入此項" 按鈕
-            // 我們不再將資料存在按鈕上
-            // importAllBtn.dataset.events = JSON.stringify(parsedEvents);
-
+            // (v1.1.0) "全部匯入" 按鈕會觸發所有卡片的 "匯入此項"
+            
             parsedEvents.forEach(event => {
                 const card = document.createElement('div');
-                card.className = 'ai-result-card form-like'; // (v1.1.0) 使用新樣式
-                card.id = event.id; // 這個 ID 是 `ai_xxxx`
+                card.className = 'ai-result-card form-like'; 
+                card.id = event.id; 
 
                 // (v1.1.0) 規則 3 & 4：組合事件內容 (Content)
-                // 這是準備放入 *可編輯* <textarea> 的 *預設值*
                 let detailsText = '';
                 detailsText += `📋 原始標題: ${event.originalTitle}\n\n`; 
                 if(event.originalTime && event.originalTime !== '全天') detailsText += `⏰ 時間: ${event.originalTime}\n\n`;
@@ -1557,20 +1556,20 @@ JSON 結構：
                 if(event.originalDescription.trim()) detailsText += `💬 AI 備註:\n${event.originalDescription.trim()}\n\n`;
                 
                 // (v1.1.0) 複製顏色和表情符號選擇器的 HTML
-                // 我們從主頁面的 modal 複製結構
-                // (要確保 #eventModal 存在)
                 const colorPickerHtml = document.querySelector('#eventModal .color-picker') ? document.querySelector('#eventModal .color-picker').innerHTML : '';
                 const emojiPickerHtml = document.querySelector('#eventModal .emoji-picker') ? document.querySelector('#eventModal .emoji-picker').innerHTML : '';
 
-                // (v1.1.0) 規則 1 & 3：渲染完整的表單介面
+                // (v1.2.0) 規則 1 & 3：渲染完整的表單介面
                 card.innerHTML = `
                     <div class="ai-result-header">
                         <h5 id="displayTitle_${event.id}">🏷️ ${event.displayTitle}</h5>
                         <button class="btn btn-primary btn-ai-import" style="padding: 5px 10px; font-size: 0.8rem;">匯入此項</button>
                     </div>
-                    <div class="ai-result-details" style="display: block;"> <div class="form-group">
-                            <label for="aiTitle_${event.id}">📋 事件標題 (會影響上方標題)：</label>
-                            <input type="text" id="aiTitle_${event.id}" value="${event.simplifiedTitle}">
+                    <div class="ai-result-details" style="display: none;"> 
+                        
+                        <div class="form-group">
+                            <label for="aiTitle_${event.id}">📋 事件標題 (所得即所見)：</label>
+                            <input type="text" id="aiTitle_${event.id}" value="${event.displayTitle}">
                         </div>
                         
                         <div class="form-group">
@@ -1601,37 +1600,32 @@ JSON 結構：
                                 ${emojiPickerHtml}
                             </div>
                         </div>
-                        <input type="hidden" id="aiTime_${event.id}" value="${event.originalTime}">
-                    </div>
+                        </div>
                 `;
                 
                 resultsContainer.appendChild(card);
 
-                // --- (v1.1.0) 綁定新介面的事件 ---
+                // --- (v1.2.0) 綁定新介面的事件 ---
 
-                // 這裡我們用 card (剛建立的元素) 來找尋子元素，效能更好
+                const cardId = event.id; // (v1.2.0) 預先定義 ID
+
+                // (v1.2.0) 規則 3a：綁定標頭點擊展開/收合
+                const header = card.querySelector('.ai-result-header');
+                const details = card.querySelector('.ai-result-details');
+                header.addEventListener('click', (e) => {
+                    // 如果點擊的是匯入按鈕，則不動作
+                    if (e.target.classList.contains('btn-ai-import')) return;
+                    details.style.display = details.style.display === 'block' ? 'none' : 'block';
+                });
                 
-                // (v1.1.0) 規則 3：即時更新標題
-                const titleInput = card.querySelector(`#aiTitle_${event.id}`);
-                const displayTitleElement = card.querySelector(`#displayTitle_${event.id}`);
-                const timeInput = card.querySelector(`#aiTime_${event.id}`); // 抓隱藏的時間
+                // (v1.2.0) 規則 3 (所得即所見)：即時更新標題 (簡化)
+                const titleInput = card.querySelector(`#aiTitle_${cardId}`);
+                const displayTitleElement = card.querySelector(`#displayTitle_${cardId}`);
 
                 titleInput.addEventListener('input', () => {
-                    let newTitle = titleInput.value.trim();
-                    if (newTitle.length > 10) {
-                        newTitle = newTitle.substring(0, 10) + '…';
-                    }
-                    
-                    const time = timeInput.value;
-                    if (time && time !== '全天') {
-                        // (v1.1.0) 確保時間格式正確
-                        const timeParts = time.split(':');
-                        const hours = timeParts[0] ? timeParts[0].padStart(2, '0') : '00';
-                        const minutes = timeParts[1] ? timeParts[1].padEnd(2, '0') : '00';
-                        displayTitleElement.textContent = `🏷️ [${hours}:${minutes}] ${newTitle}`;
-                    } else {
-                        displayTitleElement.textContent = `🏷️ ${newTitle}`;
-                    }
+                    // (v1.2.0) 所得即所見：
+                    // 您在輸入框打什麼，標題就顯示什麼。
+                    displayTitleElement.textContent = `🏷️ ${titleInput.value}`;
                 });
 
                 // (v1.1.0) 綁定顏色選擇
@@ -1639,17 +1633,11 @@ JSON 結構：
                 colorPicker.addEventListener('click', (e) => {
                     const target = e.target.closest('.color-option');
                     if (!target) return;
-                    
-                    // 移除同一個 card 內的其他選中
                     colorPicker.querySelectorAll('.color-option').forEach(o => o.classList.remove('selected'));
-                    // 選中點擊的
                     target.classList.add('selected');
                 });
-                // 預選 "無" (如果 '無' 選項存在)
                 const noneColorOption = colorPicker.querySelector('.color-option[data-color=""]');
-                if (noneColorOption) {
-                    noneColorOption.classList.add('selected');
-                }
+                if (noneColorOption) noneColorOption.classList.add('selected');
 
 
                 // (v1.1.0) 綁定 Emoji 選擇
@@ -1657,27 +1645,21 @@ JSON 結構：
                 emojiPicker.addEventListener('click', (e) => {
                     const target = e.target.closest('.emoji-option');
                     if (!target) return;
-                    
                     emojiPicker.querySelectorAll('.emoji-option').forEach(o => o.classList.remove('selected'));
                     target.classList.add('selected');
                 });
-                // (v1.1.0) 規則 5：自動預選 AI 建議的 Emoji
                 const aiEmojiOption = emojiPicker.querySelector(`[data-emoji="${event.emoji}"]`);
                 if (aiEmojiOption) {
                     aiEmojiOption.classList.add('selected');
                 } else {
-                    // 如果 AI 給的 emoji 不在選項中，就預選 "無"
                     const noneEmojiOption = emojiPicker.querySelector('[data-emoji=""]');
-                    if (noneEmojiOption) {
-                        noneEmojiOption.classList.add('selected');
-                    }
+                    if (noneEmojiOption) noneEmojiOption.classList.add('selected');
                 }
 
 
                 // (v1.1.0) 綁定 "匯入此項" 按鈕
                 card.querySelector('.btn-ai-import').addEventListener('click', (e) => {
                     e.stopPropagation(); 
-                    // (v1.1.0) 傳遞整個卡片元素，以便讀取資料
                     importEventFromAI(card); 
                 });
 
@@ -3055,24 +3037,59 @@ JSON 結構：
             max-height: 1000px; /* (v1.1.0) 用於消失動畫 */
             transition: opacity 0.5s ease, transform 0.5s ease, max-height 0.5s ease, padding 0.5s ease, margin 0.5s ease;
         }
-        .ai-result-card.form-like .ai-result-header {
+       .ai-result-card.form-like .ai-result-header {
              /* 標頭稍微加個底色，與內容區分 */
             background: var(--theme-bg-trans-1);
-            border-radius: 8px 8px 0 0;
+            border-radius: 8px; /* (v1.2.0) 預設圓角 */
             border: 1px solid var(--theme-border);
-            border-bottom: none; /* 底部邊框由 details 提供 */
-            cursor: default; /* (v1.1.0) 標頭不再是點擊展開 */
+            /* border-bottom: none; (v1.2.0) 移除，因為收合時需要底部邊框 */
+            cursor: pointer; /* (v1.2.0) 規則 3a：恢復點擊展開 */
+            transition: background-color 0.2s ease; /* (v1.2.0) 加上 hover 效果 */
         }
         .ai-result-card.form-like .ai-result-header:hover {
-            background: var(--theme-bg-trans-1); /* 移除 hover 效果 */
+            background: var(--theme-bg-trans-2); /* (v1.2.0) 恢復 hover 效果 */
+        }
+        /* (v1.2.0) 當展開時，標頭移除底部圓角 */
+        .ai-result-card.form-like .ai-result-details[style*="block"] {
+             border-top: none;
+             border-radius: 0 0 8px 8px;
+             margin-top: 0;
+        }
+        .ai-result-card.form-like .ai-result-details[style*="block"] + .ai-result-header {
+             /* 這段 CSS 看不到，但它確保了 .ai-result-header 在 .ai-result-details 上方 */
+        }
+         /* (v1.2.0) 修正：當展開時，標頭移除底部圓角 */
+        .ai-result-card.form-like .ai-result-details[style*="block"] {
+            display: block; /* 確保 display 屬性 */
+        }
+        .ai-result-card.form-like .ai-result-header {
+            position: relative; /* 確保標頭在上方 */
+            z-index: 2;
         }
         .ai-result-card.form-like .ai-result-details {
-            /* 預設顯示 */
-            display: block; 
+            position: relative;
+            z-index: 1;
+            /* (v1.2.0) 修正展開時的圓角問題 */
+        }
+        .ai-result-card.form-like .ai-result-details[style*="block"] {
+             border-radius: 0 0 8px 8px;
+             border-top: none; /* 避免雙重邊框 */
+        }
+        .ai-result-card.form-like .ai-result-header:has(+ .ai-result-details[style*="block"]) {
+             border-bottom-left-radius: 0;
+             border-bottom-right-radius: 0;
+             border-bottom-color: transparent; /* 隱藏底部邊框，交給 details */
+        }
+
+
+        .ai-result-card.form-like .ai-result-details {
+            /* 預設顯示 (v1.2.0) JS 會設為 display: none */
+            /* display: block; */
             /* (v1.1.0) 套用 modal-content 類似的背景和邊框 */
             background: rgba(0,0,0,0.05); /* 給一點點底色 */
             border: 1px solid var(--theme-border);
-            border-radius: 0 0 8px 8px;
+            border-radius: 8px; /* (v1.2.0) 預設圓角 */
+            margin-top: -1px; /* (v1.2.0) 讓邊框重疊 */
             /* (v1.1.0) 借用 modal-content 的表單樣式 */
         }
         .theme-ocean .ai-result-card.form-like .ai-result-details, 
@@ -3084,13 +3101,13 @@ JSON 結構：
              background: rgba(0,0,0,0.1); /* 科技風底色深一點 */
         }
 
-        /* (v1.1.0) 讓 AI 卡片內的表單元素與 modal 內一致 */
+      /* (v1.2.0) 讓 AI 卡片內的表單元素與 modal 內一致 (縮小間距) */
         .ai-result-details .form-group {
-             margin-bottom: 15px;
+             margin-bottom: 10px; /* (v1.2.0) 修正：從 15px 縮小到 10px */
         }
         .ai-result-details .form-group label {
             display: block;
-            margin-bottom: 5px;
+            margin-bottom: 3px; /* (v1.2.0) 修正：從 5px 縮小到 3px */
             font-weight: bold;
             font-size: 0.9rem; /* 縮小一點字體 */
         }
