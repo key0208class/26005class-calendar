@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>雲教室行事曆 v1.0.0</title>
+    <title>雲教室行事曆 v1.1.0</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -1337,7 +1337,7 @@ JSON 結構：
     "time": "HH:MM (24小時制) 或 '全天' (如果沒有具體時間)",
     "location": "地點 (如果有的話)",
     "description": "詳細內容或備註 (條列式)",
-    "emoji": "一個最能代表此活動的 emoji (例如：研習用 📚, 運動用 🏃, 慶祝用 🎉)"
+    "emoji": "一個最能代表此活動的 emoji (例如：研習用 📖, 運動用 🔥, 慶祝用 🎉)"
   }
 ]
 
@@ -1416,32 +1416,54 @@ JSON 結構：
                 const cleanJsonText = jsonText.replace(/^```json\s*|```\s*$/g, '');
                 const parsedData = JSON.parse(cleanJsonText);
                 
-                // (v1.0.0) 實作標題簡化邏輯 (規則 4 & 5)
+                // (v1.1.0) 實作標題簡化邏輯 (依據新規則 2 & 5)
                 return parsedData.map((item, index) => {
-                    // 規則 4：簡化標題 (0-10字)
+                    
+                    // (v1.1.0) 規則 5：簡化標題 (0-10字)
                     let simpleTitle = item.title;
                     if (simpleTitle.length > 10) {
                         simpleTitle = simpleTitle.substring(0, 10) + '…';
                     }
 
-                    // 規則 4：組合顯示標題
+                    // (v1.1.0) 規則 2：組合顯示標題
+                    // 只有在 time 存在且不是 '全天' 時，才加上 [HH:MM]
                     let displayTitle = simpleTitle;
                     if (item.time && item.time !== '全天') {
-                        displayTitle = `[${item.time}] ${simpleTitle}`;
+                        // 確保時間格式是 HH:MM (例如 AI 可能只給 19:00)
+                        const timeParts = item.time.split(':');
+                        const hours = timeParts[0] ? timeParts[0].padStart(2, '0') : '00';
+                        const minutes = timeParts[1] ? timeParts[1].padEnd(2, '0') : '00';
+                        displayTitle = `[${hours}:${minutes}] ${simpleTitle}`;
                     }
+                    
+                    // (v1.1.0) 檢查是否有連續日期 (規則 4)
+                    // 目前的 AI Prompt (v1.8.2) 只有要求 "date": "YYYY-MM-DD"
+                    // 我們先假設 AI 辨識的都是單日事件，使用者可在介面上手動修改範圍
+                    
+                    const eventDate = item.date || new Date().toISOString().split('T')[0]; // 預防 AI 漏給日期
 
                     return {
-                        id: `ai_${Date.now()}_${index}`,
-                        title: item.title, // 保留原始完整標題
-                        date: item.date,
-                        time: item.time,
-                        location: item.location || '',
-                        description: item.description || '',
-                        emoji: item.emoji || '💡', // (v1.0.0) 規則 5：使用 AI 的 emoji，預設為 💡
-                        speaker: '', // (保留欄位)
-                        notes: '',   // (保留欄位)
-                        simplifiedTitle: simpleTitle, // (v1.0.0) 10字版
-                        displayTitle: displayTitle    // (v1.0.0) [HH:MM] 10字版
+                        id: `ai_${Date.now()}_${index}`, // 唯一的卡片 ID
+                        
+                        // (v1.1.0) 保留 AI 原始資料，用於介面編輯
+                        originalTitle: item.title, // AI 原始完整標題
+                        originalDate: eventDate,
+                        originalTime: item.time || '全天',
+                        originalLocation: item.location || '',
+                        originalDescription: item.description || '',
+                        
+                        // (v1.1.0) 顯示與編輯用的資料
+                        displayTitle: displayTitle,    // 用於卡片標題 (會動態更新)
+                        simplifiedTitle: simpleTitle,  // 簡化標題 (用於編輯器預設值)
+                        
+                        // (v1.1.0) 規則 5：使用 AI 的 emoji，預設為 💡
+                        emoji: item.emoji || '💡', 
+                        
+                        // (v1.1.0) 規則 4：預設開始/結束日期為同一天
+                        startDate: eventDate, 
+                        endDate: eventDate,
+                        
+                        color: '' // 預設無顏色
                     };
                 });
 
@@ -1500,7 +1522,7 @@ JSON 結構：
             });
         }
 
-        // (v1.8.0) 渲染 AI 辨識結果到畫面上 (從 v1.7.0 移至此處，內容不變)
+        // (v1.1.0) 渲染 AI 辨識結果到畫面上 (全新介面)
         function renderAiResults(parsedEvents) {
             const resultsContainer = document.getElementById('aiResultsContainer');
             const importAllBtn = document.getElementById('importAllAiBtn');
@@ -1508,116 +1530,253 @@ JSON 結構：
 
             if (parsedEvents.length === 0) {
                 // (可自行修改) AI 找不到內容的提示文字
-                resultsContainer.innerHTML = '<div class="ai-no-result">喔喔！在您提供的內容中找不到可辨識的「未來」活動資訊。</div>';
+                // (v1.8.2) 移除了「未來」的限制，修正提示文字
+                resultsContainer.innerHTML = '<div class="ai-no-result">喔喔！在您提供的內容中找不到可辨識的活動資訊。</div>';
                 importAllBtn.style.display = 'none';
                 return;
             }
 
             importAllBtn.style.display = 'inline-block';
             
-            // 將事件資料儲存在按鈕上，方便後續匯入
-            importAllBtn.dataset.events = JSON.stringify(parsedEvents);
+            // (v1.1.0) 注意：由於介面複雜化，"全部匯入"按鈕現在只是一個觸發器
+            // 它會觸發下面所有卡片的 "匯入此項" 按鈕
+            // 我們不再將資料存在按鈕上
+            // importAllBtn.dataset.events = JSON.stringify(parsedEvents);
 
             parsedEvents.forEach(event => {
                 const card = document.createElement('div');
-                card.className = 'ai-result-card';
-                card.id = event.id;
+                card.className = 'ai-result-card form-like'; // (v1.1.0) 使用新樣式
+                card.id = event.id; // 這個 ID 是 `ai_xxxx`
 
-                // (v1.0.0) 格式化詳細內容 (規則 3 & 4)
+                // (v1.1.0) 規則 3 & 4：組合事件內容 (Content)
                 // 這是準備放入 *可編輯* <textarea> 的 *預設值*
                 let detailsText = '';
-                // 規則 4：將完整標題放入詳細資料中
-                detailsText += `📋 完整標題: ${event.title}\n\n`; 
-                if(event.date) detailsText += `📆 日期: ${event.date} ${event.time}\n\n`;
-                if(event.location) detailsText += `📍 地點: ${event.location}\n\n`;
-                if(event.description.trim()) detailsText += `💬 備註:\n${event.description.trim()}\n\n`;
+                detailsText += `📋 原始標題: ${event.originalTitle}\n\n`; 
+                if(event.originalTime && event.originalTime !== '全天') detailsText += `⏰ 時間: ${event.originalTime}\n\n`;
+                if(event.originalLocation) detailsText += `📍 地點: ${event.originalLocation}\n\n`;
+                if(event.originalDescription.trim()) detailsText += `💬 AI 備註:\n${event.originalDescription.trim()}\n\n`;
+                
+                // (v1.1.0) 複製顏色和表情符號選擇器的 HTML
+                // 我們從主頁面的 modal 複製結構
+                // (要確保 #eventModal 存在)
+                const colorPickerHtml = document.querySelector('#eventModal .color-picker') ? document.querySelector('#eventModal .color-picker').innerHTML : '';
+                const emojiPickerHtml = document.querySelector('#eventModal .emoji-picker') ? document.querySelector('#eventModal .emoji-picker').innerHTML : '';
 
-                // (v1.0.0) 規則 3：修改 card.innerHTML 以包含 <textarea>
+                // (v1.1.0) 規則 1 & 3：渲染完整的表單介面
                 card.innerHTML = `
                     <div class="ai-result-header">
-                        <h5>🏷️ ${event.displayTitle}</h5>
-                        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 0.8rem;">匯入此項</button>
+                        <h5 id="displayTitle_${event.id}">🏷️ ${event.displayTitle}</h5>
+                        <button class="btn btn-primary btn-ai-import" style="padding: 5px 10px; font-size: 0.8rem;">匯入此項</button>
                     </div>
-                    <div class="ai-result-details">
-                        <p style="font-size: 0.8rem; opacity: 0.7; margin: 0 0 5px 0;">(您可以直接在此欄位修改內容，修改後再按匯入)</p>
-                        <textarea class="ai-result-textarea">${detailsText.trim()}</textarea>
+                    <div class="ai-result-details" style="display: block;"> <div class="form-group">
+                            <label for="aiTitle_${event.id}">📋 事件標題 (會影響上方標題)：</label>
+                            <input type="text" id="aiTitle_${event.id}" value="${event.simplifiedTitle}">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="aiContent_${event.id}">📄 事件內容：</label>
+                            <textarea id="aiContent_${event.id}" class="ai-result-textarea">${detailsText.trim()}</textarea>
+                        </div>
+                        
+                        <div class="form-group" style="display: flex; gap: 10px;">
+                            <div style="flex: 1;">
+                                <label for="aiStartDate_${event.id}">🗓️ 開始日期：</label>
+                                <input type="date" id="aiStartDate_${event.id}" value="${event.startDate}">
+                            </div>
+                            <div style="flex: 1;">
+                                <label for="aiEndDate_${event.id}">🗓️ 結束日期：</label>
+                                <input type="date" id="aiEndDate_${event.id}" value="${event.endDate}">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>🎨 顏色標籤：</label>
+                            <div class="color-picker" data-card-id="${event.id}">
+                                ${colorPickerHtml}
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>😊 表情符號：</label>
+                            <div class="emoji-picker" data-card-id="${event.id}">
+                                ${emojiPickerHtml}
+                            </div>
+                        </div>
+                        <input type="hidden" id="aiTime_${event.id}" value="${event.originalTime}">
                     </div>
                 `;
                 
-                // 綁定事件
-                card.querySelector('.ai-result-header').addEventListener('click', (e) => {
-                    // 如果點擊的是匯入按鈕，則不展開/收合
-                    if (e.target.tagName === 'BUTTON') return;
+                resultsContainer.appendChild(card);
+
+                // --- (v1.1.0) 綁定新介面的事件 ---
+
+                // 這裡我們用 card (剛建立的元素) 來找尋子元素，效能更好
+                
+                // (v1.1.0) 規則 3：即時更新標題
+                const titleInput = card.querySelector(`#aiTitle_${event.id}`);
+                const displayTitleElement = card.querySelector(`#displayTitle_${event.id}`);
+                const timeInput = card.querySelector(`#aiTime_${event.id}`); // 抓隱藏的時間
+
+                titleInput.addEventListener('input', () => {
+                    let newTitle = titleInput.value.trim();
+                    if (newTitle.length > 10) {
+                        newTitle = newTitle.substring(0, 10) + '…';
+                    }
                     
-                    const details = card.querySelector('.ai-result-details');
-                    details.style.display = details.style.display === 'block' ? 'none' : 'block';
+                    const time = timeInput.value;
+                    if (time && time !== '全天') {
+                        // (v1.1.0) 確保時間格式正確
+                        const timeParts = time.split(':');
+                        const hours = timeParts[0] ? timeParts[0].padStart(2, '0') : '00';
+                        const minutes = timeParts[1] ? timeParts[1].padEnd(2, '0') : '00';
+                        displayTitleElement.textContent = `🏷️ [${hours}:${minutes}] ${newTitle}`;
+                    } else {
+                        displayTitleElement.textContent = `🏷️ ${newTitle}`;
+                    }
                 });
 
-                card.querySelector('button').addEventListener('click', (e) => {
-                    e.stopPropagation(); // 防止觸發 header 的點擊事件
-                    importEventFromAI(event, card);
+                // (v1.1.0) 綁定顏色選擇
+                const colorPicker = card.querySelector('.color-picker');
+                colorPicker.addEventListener('click', (e) => {
+                    const target = e.target.closest('.color-option');
+                    if (!target) return;
+                    
+                    // 移除同一個 card 內的其他選中
+                    colorPicker.querySelectorAll('.color-option').forEach(o => o.classList.remove('selected'));
+                    // 選中點擊的
+                    target.classList.add('selected');
+                });
+                // 預選 "無" (如果 '無' 選項存在)
+                const noneColorOption = colorPicker.querySelector('.color-option[data-color=""]');
+                if (noneColorOption) {
+                    noneColorOption.classList.add('selected');
+                }
+
+
+                // (v1.1.0) 綁定 Emoji 選擇
+                const emojiPicker = card.querySelector('.emoji-picker');
+                emojiPicker.addEventListener('click', (e) => {
+                    const target = e.target.closest('.emoji-option');
+                    if (!target) return;
+                    
+                    emojiPicker.querySelectorAll('.emoji-option').forEach(o => o.classList.remove('selected'));
+                    target.classList.add('selected');
+                });
+                // (v1.1.0) 規則 5：自動預選 AI 建議的 Emoji
+                const aiEmojiOption = emojiPicker.querySelector(`[data-emoji="${event.emoji}"]`);
+                if (aiEmojiOption) {
+                    aiEmojiOption.classList.add('selected');
+                } else {
+                    // 如果 AI 給的 emoji 不在選項中，就預選 "無"
+                    const noneEmojiOption = emojiPicker.querySelector('[data-emoji=""]');
+                    if (noneEmojiOption) {
+                        noneEmojiOption.classList.add('selected');
+                    }
+                }
+
+
+                // (v1.1.0) 綁定 "匯入此項" 按鈕
+                card.querySelector('.btn-ai-import').addEventListener('click', (e) => {
+                    e.stopPropagation(); 
+                    // (v1.1.0) 傳遞整個卡片元素，以便讀取資料
+                    importEventFromAI(card); 
                 });
 
                 resultsContainer.appendChild(card);
             });
         }
         
-        // (v1.0.0) 從 AI 結果匯入單一事件 (規則 3 & 5)
-        async function importEventFromAI(eventData, elementToRemove) {
+        // (v1.1.0) 從 AI 結果匯入單一事件 (從新表單讀取)
+        async function importEventFromAI(cardElement) {
             
-            // (v1.0.0) 規則 3：從 <textarea> 讀取使用者修改後的內容
-            const textarea = elementToRemove.querySelector('.ai-result-textarea');
-            const modifiedContent = textarea.value.trim();
-
-            // (v1.0.0) 規則 5：使用 eventData 中由 AI 提供的 emoji
-            const smartEmoji = eventData.emoji || '💡'; // (預設 💡)
-            
-            // 組合要存到 Firebase 的資料
-            const newEvent = {
-                // (v1.0.0) title: 使用 eventData 中的 *原始完整標題*
-                // 使用者若要改標題，可自行在 <textarea> 的 "完整標題" 欄位修改
-                // 但為了簡化，我們這裡先抓 *原始* 標題，內容抓 <textarea>
-                title: eventData.title, 
-                content: modifiedContent, // (v1.0.0) 使用 <textarea> 內的完整內容
-                date: eventData.date,       // AI 回傳的 YYYY-MM-DD
-                startDate: eventData.date,  // AI 辨識預設為單日事件
-                endDate: eventData.date,    // AI 辨識預設為單日事件
-                color: '', // 預設無顏色
-                emoji: smartEmoji, // (v1.0.0) 規則 5：使用 AI 建議的 emoji
-                groupId: generateGroupId() // 產生新的 groupId
-            };
-            
-            // (v1.0.0) 為了讓使用者修改標題，我們需要一個更複雜的解析
-            // 簡易版：我們假設 <textarea> 的第一行 "📋 完整標題: " 後面是新標題
-            try {
-                const lines = modifiedContent.split('\n');
-                if (lines[0].startsWith('📋 完整標題:')) {
-                    newEvent.title = lines[0].replace('📋 完整標題:', '').trim();
-                    // (v1.0.0) 內容則為標題行以外的所有行
-                    newEvent.content = lines.slice(1).join('\n').trim();
-                } else {
-                    // 如果格式被破壞，就使用原始標題和完整 textarea 內容
-                    newEvent.title = eventData.title;
-                    newEvent.content = modifiedContent;
-                }
-            } catch (parseError) {
-                // 解析失敗，使用備用方案
-                newEvent.title = eventData.title;
-                newEvent.content = modifiedContent;
-            }
-
+            const cardId = cardElement.id; // 這個 ID 是 ai_xxxx
 
             try {
-                await addDoc(collection(db, 'public_events'), newEvent);
+                // (v1.1.0) 規則 1, 3, 4：從表單介面讀取所有使用者修改過的資料
+                const title = cardElement.querySelector(`#aiTitle_${cardId}`).value.trim();
+                const content = cardElement.querySelector(`#aiContent_${cardId}`).value.trim();
+                const startDate = cardElement.querySelector(`#aiStartDate_${cardId}`).value;
+                const endDate = cardElement.querySelector(`#aiEndDate_${cardId}`).value;
                 
-                // 從畫面上移除已匯入的項目
-                elementToRemove.style.transition = 'opacity 0.5s ease';
-                elementToRemove.style.opacity = '0';
+                // (v1.1.0) 讀取選擇的顏色
+                const selectedColorOption = cardElement.querySelector('.color-picker .selected');
+                const color = selectedColorOption ? selectedColorOption.dataset.color : '';
+
+                // (v1.1.0) 讀取選擇的 emoji
+                const selectedEmojiOption = cardElement.querySelector('.emoji-picker .selected');
+                const emoji = selectedEmojiOption ? selectedEmojiOption.dataset.emoji : '💡';
+                
+                // (v1.1.0) 基本驗證
+                if (!title) {
+                    showCustomAlert('事件標題不可為空！');
+                    // 讓卡片震動一下提示錯誤
+                    cardElement.style.animation = 'shake 0.5s';
+                    setTimeout(() => cardElement.style.animation = '', 500);
+                    return;
+                }
+                if (!startDate || !endDate) {
+                    showCustomAlert('請選擇開始和結束日期！');
+                    cardElement.style.animation = 'shake 0.5s';
+                    setTimeout(() => cardElement.style.animation = '', 500);
+                    return;
+                }
+                 // 校正時區問題再比較
+                 const compareStartDate = new Date(startDate);
+                 const compareEndDate = new Date(endDate);
+                 compareStartDate.setMinutes(compareStartDate.getMinutes() + compareStartDate.getTimezoneOffset());
+                 compareEndDate.setMinutes(compareEndDate.getMinutes() + compareEndDate.getTimezoneOffset());
+
+                if (compareStartDate > compareEndDate) {
+                     showCustomAlert('結束日期不能早於開始日期！');
+                    cardElement.style.animation = 'shake 0.5s';
+                    setTimeout(() => cardElement.style.animation = '', 500);
+                    return;
+                }
+
+                // (v1.1.0) 規則 1：組合要存到 Firebase 的資料
+                const newEventData = {
+                    title: title,
+                    content: content, 
+                    startDate: startDate, // (v1.1.0) 規則 4：使用修改後的日期
+                    endDate: endDate,   // (v1.1.0) 規則 4：使用修改後的日期
+                    color: color,
+                    emoji: emoji, 
+                    groupId: generateGroupId() // 產生新的 groupId
+                };
+
+                // (v1.1.0) 規則 4：儲存多日事件
+                // 我們使用與 saveEvent 類似的邏輯
+                
+                const batch = writeBatch(db);
+                const eventsCollectionRef = collection(db, 'public_events');
+
+                // (v1.5.0) 使用 dateRange 輔助函式
+                for (const date of dateRange(startDate, endDate)) { 
+                    const dateStr = formatDateYYYYMMDD(date);
+                    const newDocRef = doc(eventsCollectionRef); // 為每個日期創建新文件
+                    batch.set(newDocRef, {
+                        ...newEventData,
+                        date: dateStr // 特定日期的事件
+                    });
+                }
+
+                // 執行批次操作
+                await batch.commit();
+                
+                // (v1.1.0) 從畫面上移除已匯入的項目 (elementToRemove 就是 cardElement)
+                cardElement.style.transition = 'opacity 0.5s ease, transform 0.5s ease, max-height 0.5s ease, padding 0.5s ease, margin 0.5s ease';
+                cardElement.style.opacity = '0';
+                cardElement.style.transform = 'scale(0.95)';
+                cardElement.style.maxHeight = '0px';
+                cardElement.style.padding = '0';
+                cardElement.style.margin = '0';
+                cardElement.style.overflow = 'hidden';
+
                 setTimeout(() => {
-                    elementToRemove.remove();
+                    cardElement.remove();
                     // 檢查是否所有項目都已匯入
-                    if (document.getElementById('aiResultsContainer').children.length === 0) {
-                         document.getElementById('aiResultsContainer').innerHTML = '<div class="ai-no-result">所有事件均已成功匯入！</div>';
+                    const container = document.getElementById('aiResultsContainer');
+                    if (container.children.length === 0 || container.querySelectorAll('.ai-result-card').length === 0) {
+                         container.innerHTML = '<div class="ai-no-result">所有事件均已成功匯入！</div>';
                          document.getElementById('importAllAiBtn').style.display = 'none';
                     }
                 }, 500);
@@ -1628,14 +1787,20 @@ JSON 結構：
             }
         }
         
-        // 匯入所有 AI 辨識的事件
+      // (v1.1.0) 匯入所有 AI 辨識的事件 (修改觸發邏輯)
         window.importAllAiEvents = () => {
-             showCustomConfirm('確定要將目前辨識出的所有事件全部匯入行事曆嗎？', (choice) => {
+             showCustomConfirm('確定要將目前辨識出的所有事件全部匯入行事曆嗎？\n(將依據您在卡片上修改的內容匯入)', (choice) => {
                 if (choice === 'confirm') {
-                    const allResultCards = document.querySelectorAll('.ai-result-card');
-                    allResultCards.forEach(card => {
-                        // 找到對應的匯入按鈕並觸發它的點擊事件
-                        card.querySelector('button').click();
+                    // (v1.1.0) 規則 1：選取所有 "匯入此項" 按鈕並點擊
+                    const allImportButtons = document.querySelectorAll('.ai-result-card .btn-ai-import');
+                    if (allImportButtons.length === 0) {
+                        showCustomAlert('沒有可匯入的事件。');
+                        return;
+                    }
+                    // 為了避免同時觸發太多 Firebase 寫入，我們可以考慮一個個來
+                    // 但目前點擊應該是異步的，直接全部觸發
+                    allImportButtons.forEach(btn => {
+                        btn.click(); // 觸發我們在步驟三綁定的 importEventFromAI
                     });
                 }
             });
@@ -2883,6 +3048,107 @@ JSON 結構：
             margin: 0;
             flex-grow: 1;
         }
+		/* (v1.1.0) AI 結果卡片 - 表單模式 (規則 1) */
+        .ai-result-card.form-like {
+            background: transparent; /* 背景改為透明 */
+            border: none; /* 移除邊框 */
+            max-height: 1000px; /* (v1.1.0) 用於消失動畫 */
+            transition: opacity 0.5s ease, transform 0.5s ease, max-height 0.5s ease, padding 0.5s ease, margin 0.5s ease;
+        }
+        .ai-result-card.form-like .ai-result-header {
+             /* 標頭稍微加個底色，與內容區分 */
+            background: var(--theme-bg-trans-1);
+            border-radius: 8px 8px 0 0;
+            border: 1px solid var(--theme-border);
+            border-bottom: none; /* 底部邊框由 details 提供 */
+            cursor: default; /* (v1.1.0) 標頭不再是點擊展開 */
+        }
+        .ai-result-card.form-like .ai-result-header:hover {
+            background: var(--theme-bg-trans-1); /* 移除 hover 效果 */
+        }
+        .ai-result-card.form-like .ai-result-details {
+            /* 預設顯示 */
+            display: block; 
+            /* (v1.1.0) 套用 modal-content 類似的背景和邊框 */
+            background: rgba(0,0,0,0.05); /* 給一點點底色 */
+            border: 1px solid var(--theme-border);
+            border-radius: 0 0 8px 8px;
+            /* (v1.1.0) 借用 modal-content 的表單樣式 */
+        }
+        .theme-ocean .ai-result-card.form-like .ai-result-details, 
+        .theme-spring .ai-result-card.form-like .ai-result-details, 
+        .theme-meadow .ai-result-card.form-like .ai-result-details {
+             background: rgba(0,0,0,0.02);
+        }
+        .theme-tech .ai-result-card.form-like .ai-result-details {
+             background: rgba(0,0,0,0.1); /* 科技風底色深一點 */
+        }
+
+        /* (v1.1.0) 讓 AI 卡片內的表單元素與 modal 內一致 */
+        .ai-result-details .form-group {
+             margin-bottom: 15px;
+        }
+        .ai-result-details .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            font-size: 0.9rem; /* 縮小一點字體 */
+        }
+        .ai-result-details .form-group input[type="text"],
+        .ai-result-details .form-group textarea,
+        .ai-result-details .form-group input[type="date"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--theme-border);
+            border-radius: 10px;
+            font-size: 1rem;
+            box-sizing: border-box;
+            background: var(--theme-input-bg);
+            color: var(--theme-input-text);
+        }
+        .ai-result-details .form-group input[type="date"] {
+            color-scheme: var(--theme-color-scheme, light dark);
+        }
+        .ai-result-details .form-group .color-picker,
+        .ai-result-details .form-group .emoji-picker {
+            /* 借用 modal 內的樣式 */
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 5px;
+        }
+        /* (v1.1.0) 確保 AI 介面中的選項可點擊 */
+        .ai-result-details .color-option,
+        .ai-result-details .emoji-option {
+             cursor: pointer;
+        }
+        /* (v1.1.0) AI 介面中的選項選中樣式 */
+        .ai-result-details .color-option.selected {
+            border-color: var(--theme-modal-text);
+            transform: scale(1.2);
+        }
+        .ai-result-details .color-option.none-option.selected {
+            border-color: var(--theme-modal-text);
+            border-width: 3px;
+        }
+        .ai-result-details .emoji-option.selected {
+            background: rgba(255, 255, 255, 0.1);
+            transform: scale(1.2);
+        }
+        .theme-ocean .ai-result-details .emoji-option.selected,
+        .theme-spring .ai-result-details .emoji-option.selected,
+        .theme-meadow .ai-result-details .emoji-option.selected {
+             background: rgba(0, 0, 0, 0.1);
+        }
+
+        /* (v1.1.0) 錯誤震動動畫 */
+        @keyframes shake {
+            0% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            50% { transform: translateX(5px); }
+            75% { transform: translateX(-5px); }
+            100% { transform: translateX(0); }
+        }
         .ai-result-details {
             display: none; /* 預設隱藏 */
             padding: 15px;
@@ -3141,12 +3407,12 @@ JSON 結構：
                     <label>😊 表情符號：</label>
                     <div class="emoji-picker">
                         <!-- (可自行修改) Emoji 選項 -->
-                        <span class="emoji-option" data-emoji="">無</span> <span class="emoji-option" data-emoji="📚">📚</span>
-                        <span class="emoji-option" data-emoji="💉">💉</span> <span class="emoji-option" data-emoji="🎉">🎉</span>
-                        <span class="emoji-option" data-emoji="📝">📝</span> <span class="emoji-option" data-emoji="🏃">🏃</span>
-                        <span class="emoji-option" data-emoji="🎭">🎭</span> <span class="emoji-option" data-emoji="🍎">🍎</span>
-                        <span class="emoji-option" data-emoji="⚽">⚽</span> <span class="emoji-option" data-emoji="🎵">🎵</span>
-                        <span class="emoji-option" data-emoji="🔬">🔬</span> <span class="emoji-option" data-emoji="🎨">🎨</span>
+                        <span class="emoji-option" data-emoji="">無</span> <span class="emoji-option" data-emoji="📖">📖</span>
+                        <span class="emoji-option" data-emoji="🥰">🥰</span> <span class="emoji-option" data-emoji="🎉">🎉</span>
+                        <span class="emoji-option" data-emoji="📝">📝</span> <span class="emoji-option" data-emoji="💖">💖</span>
+                        <span class="emoji-option" data-emoji="🏰">🏰</span> <span class="emoji-option" data-emoji="🎁">🎁</span>
+                        <span class="emoji-option" data-emoji="🔥">🔥</span> <span class="emoji-option" data-emoji="🎵">🎵</span>
+                        <span class="emoji-option" data-emoji="🌈">🌈</span> <span class="emoji-option" data-emoji="🌟">🌟</span>
                     </div>
                 </div>
                 <div class="btn-group">
