@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>雲教室行事曆 v1.2.1</title>
+    <title>雲教室行事曆 v1.2.2</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -1323,7 +1323,7 @@
             }
 
             // (v1.8.1) 依照您的指示，鎖定使用 gemini-2.5-flash-preview-05-20 模型
-            const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${userAiApiKey}`;
+            const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${userAiApiKey}`;
             
             // (v1.8.2) (可自行修改) AI 系統提示 (Prompt) - 移除了「未來」和「不要抓取過去」的限制
             // (v1.2.0) 優化標題規則 (規則 4)
