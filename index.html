@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>雲教室行事曆 v1.2.2</title>
+    <title>雲教室行事曆 v1.2.3</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -1788,6 +1788,209 @@ function renderAiResults(parsedEvents) {
             confirmModal.style.display = 'block';
         }
 
+        // ==========================================
+        // 🔄 Google 行事曆同步核心邏輯 (v2.0.0 新增)
+        // ==========================================
+        const GOOGLE_CLIENT_ID = 'ntkm18a2k6j37npt76me4gp5hu9rbf6g.apps.googleusercontent.com'; 
+        const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
+        const SCOPES = 'https://www.googleapis.com/auth/calendar.events';
+        let tokenClient;
+        let gapiInited = false;
+        let gisInited = false;
+
+        // 初始化 Google API (當按鈕被點擊時才會觸發初始化，節省資源)
+        async function initGoogleCalendarApi() {
+            if (gapiInited && gisInited) return true;
+            
+            return new Promise((resolve, reject) => {
+                try {
+                    gapi.load('client', async () => {
+                        await gapi.client.init({
+                            apiKey: firebaseConfig.apiKey, // 直接沿用 Firebase 的 API Key
+                            discoveryDocs: [DISCOVERY_DOC],
+                        });
+                        gapiInited = true;
+                        
+                        tokenClient = google.accounts.oauth2.initTokenClient({
+                            client_id: GOOGLE_CLIENT_ID,
+                            scope: SCOPES,
+                            callback: '', // 會在個別函式中定義
+                        });
+                        gisInited = true;
+                        resolve(true);
+                    });
+                } catch (error) {
+                    console.error("Google API 初始化失敗:", error);
+                    reject(error);
+                }
+            });
+        }
+
+        // [功能 1] 從 Google 行事曆下載 (匯入到 AI 行事曆)
+        window.syncFromGCal = async () => {
+            if (!isAdmin) { showCustomAlert("僅限管理員操作！"); return; }
+            if (GOOGLE_CLIENT_ID.includes('請貼上')) { showCustomAlert("系統未設定 Google Client ID，無法同步！"); return; }
+
+            showCustomAlert("🔄 正在初始化 Google 服務，請稍候...");
+            await initGoogleCalendarApi();
+            document.getElementById('alertModal').style.display = 'none';
+
+            // 設定取得 Token 後的回呼動作
+            tokenClient.callback = async (resp) => {
+                if (resp.error !== undefined) { throw (resp); }
+                try {
+                    showCustomAlert("📥 正在從 Google 行事曆讀取近期事件...");
+                    
+                    // 抓取未來三個月的事件
+                    const timeMin = new Date();
+                    const timeMax = new Date();
+                    timeMax.setMonth(timeMax.getMonth() + 3);
+
+                    const response = await gapi.client.calendar.events.list({
+                        'calendarId': 'primary',
+                        'timeMin': timeMin.toISOString(),
+                        'timeMax': timeMax.toISOString(),
+                        'showDeleted': false,
+                        'singleEvents': true,
+                        'orderBy': 'startTime'
+                    });
+
+                    const gcalEvents = response.result.items;
+                    if (!gcalEvents || gcalEvents.length === 0) {
+                        showCustomAlert("Google 行事曆中沒有找到近期事件。");
+                        return;
+                    }
+
+                    let importCount = 0;
+                    const batch = writeBatch(db);
+                    const eventsCollectionRef = collection(db, 'public_events');
+
+                    for (const gEvent of gcalEvents) {
+                        const title = gEvent.summary || "無標題";
+                        const content = gEvent.description || "";
+                        let eventDate = "";
+
+                        // 判斷是全天事件還是特定時間
+                        if (gEvent.start.date) {
+                            eventDate = gEvent.start.date; 
+                        } else if (gEvent.start.dateTime) {
+                            eventDate = gEvent.start.dateTime.split('T')[0];
+                        }
+
+                        if (!eventDate) continue;
+
+                        // 防止重複：檢查雲端教室行事曆是否已經有同日期、同標題的事件
+                        const exists = events.some(e => e.title === title && e.date === eventDate);
+                        if (!exists) {
+                            const newDocRef = doc(eventsCollectionRef);
+                            batch.set(newDocRef, {
+                                title: title,
+                                content: content,
+                                date: eventDate,
+                                startDate: eventDate,
+                                endDate: eventDate,
+                                color: 'blue', // 從 Google 來的一律先標為藍色
+                                emoji: '📅',
+                                groupId: generateGroupId(),
+                                gcalEventId: gEvent.id // 記錄來源 ID
+                            });
+                            importCount++;
+                        }
+                    }
+
+                    if (importCount > 0) {
+                        await batch.commit();
+                        showCustomAlert(`✅ 成功從 Google 行事曆同步了 ${importCount} 筆新事件！`);
+                    } else {
+                        showCustomAlert("💡 您的行事曆目前與 Google 同步中，沒有發現需要新增的事件。");
+                    }
+
+                } catch (err) {
+                    console.error("讀取 Google 行事曆失敗：", err);
+                    showCustomAlert("讀取 Google 行事曆失敗：" + err.message);
+                }
+            };
+
+            // 觸發授權視窗
+            if (gapi.client.getToken() === null) {
+                tokenClient.requestAccessToken({prompt: 'consent'});
+            } else {
+                tokenClient.requestAccessToken({prompt: ''});
+            }
+        };
+
+        // [功能 2] 上傳至 Google 行事曆 (匯出 AI 行事曆的事件)
+        window.syncToGCal = async () => {
+            if (!isAdmin) { showCustomAlert("僅限管理員操作！"); return; }
+            if (GOOGLE_CLIENT_ID.includes('請貼上')) { showCustomAlert("系統未設定 Google Client ID，無法同步！"); return; }
+
+            showCustomConfirm("即將把本月及未來的所有事件上傳至您的 Google 行事曆，確定要執行嗎？", async (choice) => {
+                if(choice !== 'confirm') return;
+
+                showCustomAlert("🔄 正在初始化 Google 服務，請稍候...");
+                await initGoogleCalendarApi();
+                document.getElementById('alertModal').style.display = 'none';
+
+                tokenClient.callback = async (resp) => {
+                    if (resp.error !== undefined) { throw (resp); }
+                    try {
+                        showCustomAlert("⬆️ 正在將事件上傳至 Google 行事曆...");
+                        
+                        let exportCount = 0;
+                        const todayStr = new Date().toISOString().split('T')[0];
+                        
+                        // 只上傳今天及未來的事件，且避開已經有 gcalEventId 的事件(代表那是從Google載下來的)
+                        const eventsToExport = events.filter(e => e.date >= todayStr && !e.gcalEventId);
+
+                        if (eventsToExport.length === 0) {
+                            showCustomAlert("💡 目前沒有需要上傳至 Google 的新事件。");
+                            return;
+                        }
+
+                        const batch = writeBatch(db); // 用於回寫 gcalEventId
+
+                        for (const ev of eventsToExport) {
+                            const resource = {
+                                'summary': ev.title,
+                                'description': ev.content + "\n\n(由雲教室行事曆自動同步)",
+                                'start': { 'date': ev.date, 'timeZone': 'Asia/Taipei' },
+                                'end': { 'date': ev.date, 'timeZone': 'Asia/Taipei' }
+                            };
+
+                            const request = gapi.client.calendar.events.insert({
+                                'calendarId': 'primary',
+                                'resource': resource
+                            });
+
+                            const response = await request;
+                            
+                            // 上傳成功後，將 Google 的 EventID 存回 Firebase，避免未來重複上傳
+                            if (response.result && response.result.id) {
+                                const docRef = doc(db, 'public_events', ev.id);
+                                batch.update(docRef, { gcalEventId: response.result.id });
+                                exportCount++;
+                            }
+                        }
+
+                        if (exportCount > 0) {
+                            await batch.commit(); // 儲存標記
+                            showCustomAlert(`✅ 成功將 ${exportCount} 筆事件上傳至 Google 行事曆！`);
+                        }
+
+                    } catch (err) {
+                        console.error("上傳至 Google 行事曆失敗：", err);
+                        showCustomAlert("上傳失敗：" + (err.result?.error?.message || err.message));
+                    }
+                };
+
+                // 觸發授權視窗
+                if (gapi.client.getToken() === null) {
+                    tokenClient.requestAccessToken({prompt: 'consent'});
+                } else {
+                    tokenClient.requestAccessToken({prompt: ''});
+                }
+            });
+        };
 
     </script>
     <style>
@@ -3274,6 +3477,9 @@ function renderAiResults(parsedEvents) {
         // 設定 pdf.js 的 worker 路徑
         pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js`;
     </script>
+	<!-- Google API 與身份驗證 (用於 Google 行事曆同步) -->
+    <script async defer src="https://apis.google.com/js/api.js"></script>
+    <script async defer src="https://accounts.google.com/gsi/client"></script>
 </head>
 </head>
 
@@ -3484,6 +3690,7 @@ function renderAiResults(parsedEvents) {
             </div>
         </div>
 
+       <!-- 匯入區塊開始 -->
         <div class="import-section">
             <div class="import-header">
                 <h4>📥 匯入</h4>
@@ -3493,9 +3700,24 @@ function renderAiResults(parsedEvents) {
             <input type="file" id="importFile" accept=".json" style="margin-bottom: 10px; width: 100%;">
             <button class="btn btn-secondary" onclick="importData()" style="width: 100%;">匯入 .json 檔案</button>
         </div>
+        <!-- 匯入區塊結束 -->
+
+        <!-- Google 行事曆同步區塊開始 -->
+        <div class="export-section" style="background: rgba(33, 150, 243, 0.1);">
+            <h4>🔄 Google 行事曆同步 (僅限管理員)</h4>
+            <p class="ai-panel-desc" style="margin-bottom: 10px;">點擊下方按鈕以連結您的個人 Google 行事曆。</p>
+            <div class="settings-grid-container">
+                <div class="settings-grid-item">
+                    <button class="btn btn-primary" onclick="syncFromGCal()" style="background: #4285F4; border: 1px solid #fff;">⬇️ 從 Google 下載</button>
+                </div>
+                <div class="settings-grid-item">
+                    <button class="btn btn-primary" onclick="syncToGCal()" style="background: #34A853; border: 1px solid #fff;">⬆️ 上傳至 Google</button>
+                </div>
             </div>
         </div>
-        </div>
+        <!-- Google 行事曆同步區塊結束 -->
+
+    </div>
 
         <!-- (v1.4.0) 移除 "關閉設定" 按鈕 -->
     </div>
