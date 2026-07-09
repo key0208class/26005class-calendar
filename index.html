@@ -1806,7 +1806,7 @@ function renderAiResults(parsedEvents) {
                 try {
                     gapi.load('client', async () => {
                         await gapi.client.init({
-                            apiKey: firebaseConfig.apiKey, // 直接沿用 Firebase 的 API Key
+                            // 修正 403 錯誤：移除受限的 Firebase apiKey，改為直接依賴 OAuth Token 驗證
                             discoveryDocs: [DISCOVERY_DOC],
                         });
                         gapiInited = true;
