@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>雲教室行事曆 v1.2.4 (智慧同步版)</title>
+    <title>雲教室行事曆 v1.2.5 (智慧同步版)</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -1903,33 +1903,69 @@ function renderAiResults(parsedEvents) {
                 const eventsCollectionRef = collection(db, 'public_events');
 
                 for (const gEvent of gcalEvents) {
-                    const title = gEvent.summary || "無標題";
-                    const content = gEvent.description || "";
-                    let eventDate = "";
-
+                    let title = gEvent.summary || "無標題";
+                    let content = gEvent.description || "";
+                    let location = gEvent.location || "";
+                    
+                    let startDate = "";
+                    let endDate = "";
+                    let startTimeStr = "";
+                    
+                    // 處理開始時間與日期
                     if (gEvent.start.date) {
-                        eventDate = gEvent.start.date; 
+                        startDate = gEvent.start.date; 
                     } else if (gEvent.start.dateTime) {
-                        eventDate = gEvent.start.dateTime.split('T')[0];
+                        startDate = gEvent.start.dateTime.split('T')[0];
+                        const startDateObj = new Date(gEvent.start.dateTime);
+                        const hours = String(startDateObj.getHours()).padStart(2, '0');
+                        const minutes = String(startDateObj.getMinutes()).padStart(2, '0');
+                        startTimeStr = `[${hours}:${minutes}] `; // 擷取具體時間
+                    }
+                    
+                    // 處理結束日期
+                    if (gEvent.end && gEvent.end.date) {
+                        const endD = new Date(gEvent.end.date);
+                        endD.setDate(endD.getDate() - 1); // Google全天結束日多一天，退回一天以符合邏輯
+                        const yyyy = endD.getFullYear();
+                        const mm = String(endD.getMonth() + 1).padStart(2, '0');
+                        const dd = String(endD.getDate()).padStart(2, '0');
+                        endDate = `${yyyy}-${mm}-${dd}`;
+                    } else if (gEvent.end && gEvent.end.dateTime) {
+                        endDate = gEvent.end.dateTime.split('T')[0];
+                    } else {
+                        endDate = startDate;
                     }
 
-                    if (!eventDate) continue;
+                    if (!startDate) continue;
+
+                    // 轉換格式：自動將時間合併進標題，將地點合併進內容
+                    const finalTitle = startTimeStr + title;
+                    let finalContent = content;
+                    if (location) {
+                        finalContent = `📍 地點：${location}\n\n${finalContent}`;
+                    }
 
                     // 防止重複
-                    const exists = events.some(e => e.title === title && e.date === eventDate);
+                    const exists = events.some(e => e.title === finalTitle && e.date === startDate);
                     if (!exists) {
-                        const newDocRef = doc(eventsCollectionRef);
-                        batch.set(newDocRef, {
-                            title: title,
-                            content: content,
-                            date: eventDate,
-                            startDate: eventDate,
-                            endDate: eventDate,
-                            color: 'blue', 
-                            emoji: '📅',
-                            groupId: generateGroupId(),
-                            gcalEventId: gEvent.id 
-                        });
+                        const newGroupId = generateGroupId();
+                        
+                        // 支援多日事件：自動展開 Google 行事曆的跨天格式
+                        for (const d of dateRange(startDate, endDate)) {
+                            const dateStr = formatDateYYYYMMDD(d);
+                            const newDocRef = doc(eventsCollectionRef);
+                            batch.set(newDocRef, {
+                                title: finalTitle,
+                                content: finalContent,
+                                date: dateStr,
+                                startDate: startDate,
+                                endDate: endDate,
+                                color: 'blue', 
+                                emoji: '📅',
+                                groupId: newGroupId,
+                                gcalEventId: gEvent.id 
+                            });
+                        }
                         importCount++;
                     }
                 }
@@ -2000,11 +2036,50 @@ function renderAiResults(parsedEvents) {
                     // 3. 逐筆檢查 AI 事件
                     for (const ev of aiEventsToProcess) {
                         const expectedDescription = (ev.content || "") + "\n\n(由雲教室行事曆自動同步)";
+                        
+                        // 智慧分析是否帶有時間標籤 [HH:MM]
+                        let isAllDay = true;
+                        let startTimeStr = "";
+                        let cleanTitle = ev.title;
+                        
+                        const timeMatch = ev.title.match(/^\[(\d{2}:\d{2})\]\s*(.*)/);
+                        if (timeMatch) {
+                            isAllDay = false;
+                            startTimeStr = timeMatch[1];
+                            cleanTitle = timeMatch[2]; // 去除標題前面的時間標記
+                        }
+
+                        const startD = ev.startDate || ev.date;
+                        let endD = ev.endDate || ev.date;
+
+                        let resourceStart = {};
+                        let resourceEnd = {};
+
+                        if (isAllDay) {
+                            // 全天事件 (需將結束日加1天才能符合 Google 格式)
+                            const endObj = new Date(endD);
+                            endObj.setDate(endObj.getDate() + 1);
+                            const nextDayStr = formatDateYYYYMMDD(endObj);
+                            resourceStart = { 'date': startD, 'timeZone': 'Asia/Taipei' };
+                            resourceEnd = { 'date': nextDayStr, 'timeZone': 'Asia/Taipei' };
+                        } else {
+                            // 具體時間事件 (自動推算時間長度 1 小時)
+                            const startDateTime = `${startD}T${startTimeStr}:00`;
+                            const endObj = new Date(`${endD}T${startTimeStr}:00`);
+                            endObj.setHours(endObj.getHours() + 1);
+                            const endHours = String(endObj.getHours()).padStart(2, '0');
+                            const endMinutes = String(endObj.getMinutes()).padStart(2, '0');
+                            const endDateTime = `${endD}T${endHours}:${endMinutes}:00`;
+                            
+                            resourceStart = { 'dateTime': startDateTime, 'timeZone': 'Asia/Taipei' };
+                            resourceEnd = { 'dateTime': endDateTime, 'timeZone': 'Asia/Taipei' };
+                        }
+
                         const resource = {
-                            'summary': ev.title,
+                            'summary': cleanTitle,
                             'description': expectedDescription,
-                            'start': { 'date': ev.date, 'timeZone': 'Asia/Taipei' },
-                            'end': { 'date': ev.date, 'timeZone': 'Asia/Taipei' }
+                            'start': resourceStart,
+                            'end': resourceEnd
                         };
 
                         if (!ev.gcalEventId) {
@@ -2031,7 +2106,6 @@ function renderAiResults(parsedEvents) {
                                 });
                                 const response = await request;
                                 if (response.result && response.result.id) {
-                                    // 將 Google 產生的新 ID 覆寫回 Firebase
                                     const docRef = doc(db, 'public_events', ev.id);
                                     batch.update(docRef, { gcalEventId: response.result.id }); 
                                     addCount++;
@@ -2043,7 +2117,7 @@ function renderAiResults(parsedEvents) {
                                 let gcalSummary = gcalTarget.summary || "";
 
                                 // 若標題、描述、日期有任一不相同，就覆寫 Google
-                                if (gcalSummary !== ev.title || gcalDesc !== expectedDescription || gcalDate !== ev.date) {
+                                if (gcalSummary !== cleanTitle || gcalDesc !== expectedDescription || gcalDate !== startD) {
                                     const request = gapi.client.calendar.events.update({
                                         'calendarId': 'primary',
                                         'eventId': ev.gcalEventId,
