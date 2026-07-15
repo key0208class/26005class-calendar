@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>雲教室行事曆 v1.2.5 (智慧同步版)</title>
+    <title>雲教室行事曆 v1.2.6 (智慧同步版)</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -651,7 +651,7 @@
             const editButtonHtml = isAdmin ?
                 `<button class="sticky-note-btn" onclick='window.editEventFromSticky(${eventJson})'>✏️</button>` : '';
 
-            // (v1.6.0) 準備日期顯示字串
+          // (v1.6.0) 準備日期顯示字串
             let dateDisplay = event.date; // 預設顯示當天
             if (event.startDate && event.endDate) {
                  if (event.startDate === event.endDate) {
@@ -661,6 +661,15 @@
                  }
             }
 
+            // (新增) 將文字中的網址轉換為可點擊的連結
+            const formatContent = (text) => {
+                if (!text) return '無內容';
+                // 基本防護，避免 HTML 標籤直譯
+                let safeText = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                // 辨識網址並轉換為超連結 (加入藍色文字與底線樣式)
+                const urlRegex = /(https?:\/\/[^\s]+)/g;
+                return safeText.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer" style="color: var(--color-primary); text-decoration: underline; word-break: break-all;">$1</a>');
+            };
 
             stickyNote.innerHTML = `
                 <div class="sticky-note-header">
@@ -670,7 +679,7 @@
                         <button class="sticky-note-close" onclick="this.closest('.sticky-note').remove()">×</button>
                     </div>
                 </div>
-                <div class="sticky-note-content">${event.content || '無內容'}</div>
+                <div class="sticky-note-content">${formatContent(event.content)}</div>
                 <!-- (v1.6.0) 新增日期顯示區域 -->
                 <div class="sticky-note-footer">
                     🗓️ ${dateDisplay}
@@ -1941,6 +1950,12 @@ function renderAiResults(parsedEvents) {
                     // 轉換格式：自動將時間合併進標題，將地點合併進內容
                     const finalTitle = startTimeStr + title;
                     let finalContent = content;
+                    
+                    // (新增) 抓取 Google Meet 連結
+                    if (gEvent.hangoutLink) {
+                        finalContent = `🎥 會議連結：${gEvent.hangoutLink}\n\n${finalContent}`;
+                    }
+
                     if (location) {
                         finalContent = `📍 地點：${location}\n\n${finalContent}`;
                     }
