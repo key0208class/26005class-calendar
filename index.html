@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>雲教室行事曆 v1.2.6 (智慧同步版)</title>
+    <title>雲教室行事曆 v1.2.7 (智慧同步版)</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -30,7 +30,9 @@
             query,
             writeBatch, // (v1.4.0) 匯入批次寫入
             where,      // (v1.6.0) 匯入 where 查詢
-            getDocs     // (v1.6.0) 匯入 getDocs 以查詢 groupId
+            getDocs,    // (v1.6.0) 匯入 getDocs 以查詢 groupId
+            setDoc,     // (v1.9.0) 匯入 setDoc 用於儲存雲端設定
+            getDoc      // (v1.9.0) 匯入 getDoc 用於讀取雲端設定
         } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
         // 🔥🔥🔥 Firebase 設定 🔥🔥🔥
@@ -92,7 +94,7 @@
             document.getElementById('monthSelect').value = currentMonth;
             document.getElementById('yearSelect').value = currentYear;
 
-            // 監聽 Firebase 驗證狀態
+           // 監聽 Firebase 驗證狀態
             onAuthStateChanged(auth, (user) => {
                 if (user) {
                     // 使用者已登入
@@ -103,6 +105,9 @@
                     document.getElementById('userInfo').style.display = 'flex';
                     document.getElementById('userName').textContent = user.displayName || user.email;
                     document.getElementById('userPhoto').src = user.photoURL || 'https://placehold.co/40x40/cccccc/ffffff?text=User';
+
+                    // (v1.9.0) 登入成功後，從雲端讀取使用者設定 (API Key)
+                    loadUserConfig(user.uid);
 
                     // 檢查是否為管理員
                     if (currentUserId === ADMIN_UID) {
@@ -133,8 +138,35 @@
             loadEventsFromFirestore();
 
             // 設定事件監聽器
+            // 設定事件監聽器
             setupEventListeners();
         });
+
+        // (v1.9.0) 從 Firestore 載入使用者個人設定
+        async function loadUserConfig(uid) {
+            try {
+                // 指向 user_configs 集合中，文件 ID 為 uid 的資料
+                const userConfigRef = doc(db, 'user_configs', uid);
+                const docSnap = await getDoc(userConfigRef);
+                
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.geminiApiKey) {
+                        userAiApiKey = data.geminiApiKey;
+                        localStorage.setItem('calendarAiApiKey', userAiApiKey); // 順便同步回本地備用
+                        
+                        // 若 AI 視窗已開啟，更新輸入框顯示
+                        const keyInput = document.getElementById('aiApiKeyInput');
+                        if (keyInput) {
+                            keyInput.value = userAiApiKey;
+                        }
+                        console.log("☁️ 已自動從雲端載入您的專屬 AI 金鑰");
+                    }
+                }
+            } catch (error) {
+                console.error("讀取雲端設定失敗:", error);
+            }
+        }
 
         // 綁定全域函式到 window 物件，以便 HTML onclick 可以呼叫
         window.loginWithGoogle = async () => {
@@ -1178,18 +1210,34 @@
         let aiUploadedFiles = []; 
         let userAiApiKey = ''; // (v1.8.0) 儲存使用者輸入的 Key
 
-        // (v1.8.0) 儲存使用者輸入的 API Key
-        window.saveAiApiKey = () => {
+        // (v1.9.0) 儲存使用者輸入的 API Key (支援雲端同步)
+        window.saveAiApiKey = async () => {
             const keyInput = document.getElementById('aiApiKeyInput');
             const key = keyInput.value.trim();
+            
+            // 1. 本地儲存 (當作備用)
             if (key) {
                 localStorage.setItem('calendarAiApiKey', key);
-                userAiApiKey = key; // 更新全域變數
-                showCustomAlert('API 金鑰已成功儲存至您的瀏覽器！');
+                userAiApiKey = key; 
             } else {
                 localStorage.removeItem('calendarAiApiKey');
                 userAiApiKey = '';
-                showCustomAlert('API 金鑰已清除。');
+            }
+
+            // 2. 雲端儲存 (有登入帳號時觸發)
+            if (currentUserId) {
+                try {
+                    const userConfigRef = doc(db, 'user_configs', currentUserId);
+                    // 寫入 Firestore，merge: true 代表如果未來有增加其他設定不會覆蓋掉
+                    await setDoc(userConfigRef, { geminiApiKey: key }, { merge: true });
+                    
+                    showCustomAlert(key ? '✅ API 金鑰已成功綁定您的雲端帳號！\n(下次登入將自動帶入)' : 'API 金鑰已從您的雲端帳號清除。');
+                } catch (error) {
+                    console.error("雲端儲存金鑰失敗:", error);
+                    showCustomAlert('⚠️ 雲端儲存失敗，請檢查資料庫規則設定。\n(目前金鑰已暫存於本地瀏覽器)');
+                }
+            } else {
+                showCustomAlert(key ? '✅ API 金鑰已儲存於本地瀏覽器！\n(💡 提示：若登入帳號，可將金鑰永久備份至雲端)' : 'API 金鑰已清除。');
             }
         }
 
@@ -3820,7 +3868,10 @@ function renderAiResults(parsedEvents) {
 
         <!-- (新增) 登入區域 -->
         <div class="login-section">
-            <h4>🔑 帳號狀態</h4>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h4 style="margin: 0;">🔑 帳號狀態</h4>
+                <span style="font-size: 0.85rem; color: var(--color-white); font-weight: bold; background: var(--color-primary); padding: 3px 10px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">v1.2.7</span>
+            </div>
             <button id="loginBtn" onclick="loginWithGoogle()">🚀 使用 Google 登入</button>
             <div id="userInfo" style="display: none;">
                 <img id="userPhoto" src="" alt="User">
