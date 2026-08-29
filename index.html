@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>雲教室行事曆 v1.2.8 (智慧同步版)</title>
+    <title>雲教室行事曆 v1.2.9 (智慧同步版)</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -1926,7 +1926,24 @@ function renderAiResults(parsedEvents) {
             });
         }
 
-        // [功能 1] 從 Google 行事曆下載 (套用無感登入)
+        // [新增] 取得或自動建立「雲教室行事曆」子日曆
+        async function getOrCreateCloudCalendar() {
+            const calName = "雲教室行事曆";
+            const response = await gapi.client.calendar.calendarList.list();
+            const calendars = response.result.items || [];
+            let cloudCal = calendars.find(c => c.summary === calName);
+
+            if (!cloudCal) {
+                // 若找不到則自動建立子日曆
+                const createResp = await gapi.client.calendar.calendars.insert({
+                    resource: { summary: calName }
+                });
+                cloudCal = createResp.result;
+            }
+            return cloudCal.id;
+        }
+
+        // [功能 1] 從 Google 行事曆下載 (海納百川模式，標記來源血統)
         window.syncFromGCal = async () => {
             if (!isAdmin) { showCustomAlert("僅限管理員操作！"); return; }
             if (GOOGLE_CLIENT_ID.includes('請貼上')) { showCustomAlert("系統未設定 Google Client ID，無法同步！"); return; }
@@ -1935,15 +1952,19 @@ function renderAiResults(parsedEvents) {
             await initGoogleCalendarApi();
             
             try {
-                await getGoogleAuthToken(); // 呼叫自動驗證機制
+                await getGoogleAuthToken(); 
                 document.getElementById('alertModal').style.display = 'none';
                 showCustomAlert("📥 正在從 Google 行事曆讀取近期事件...");
                 
+                // 取得雲教室專屬日曆 ID
+                const cloudCalId = await getOrCreateCloudCalendar();
+
                 const timeMin = new Date();
                 const timeMax = new Date();
-                timeMax.setMonth(timeMax.getMonth() + 3); // 抓未來三個月
+                timeMax.setMonth(timeMax.getMonth() + 3); 
 
-                const response = await gapi.client.calendar.events.list({
+                // 抓取主要日曆 (可能包含全能管家)
+                const primaryResp = await gapi.client.calendar.events.list({
                     'calendarId': 'primary',
                     'timeMin': timeMin.toISOString(),
                     'timeMax': timeMax.toISOString(),
@@ -1952,7 +1973,22 @@ function renderAiResults(parsedEvents) {
                     'orderBy': 'startTime'
                 });
 
-                const gcalEvents = response.result.items;
+                // 抓取雲教室專屬日曆
+                const cloudResp = await gapi.client.calendar.events.list({
+                    'calendarId': cloudCalId,
+                    'timeMin': timeMin.toISOString(),
+                    'timeMax': timeMax.toISOString(),
+                    'showDeleted': false,
+                    'singleEvents': true,
+                    'orderBy': 'startTime'
+                });
+
+                // 合併兩邊事件，並貼上血統標籤 (_sourceCalId)
+                const gcalEvents = [
+                    ...(primaryResp.result.items || []).map(e => ({ ...e, _sourceCalId: 'primary' })),
+                    ...(cloudResp.result.items || []).map(e => ({ ...e, _sourceCalId: cloudCalId }))
+                ];
+
                 if (!gcalEvents || gcalEvents.length === 0) {
                     showCustomAlert("Google 行事曆中沒有找到近期事件。");
                     return;
@@ -1971,7 +2007,6 @@ function renderAiResults(parsedEvents) {
                     let endDate = "";
                     let startTimeStr = "";
                     
-                    // 處理開始時間與日期
                     if (gEvent.start.date) {
                         startDate = gEvent.start.date; 
                     } else if (gEvent.start.dateTime) {
@@ -1979,13 +2014,12 @@ function renderAiResults(parsedEvents) {
                         const startDateObj = new Date(gEvent.start.dateTime);
                         const hours = String(startDateObj.getHours()).padStart(2, '0');
                         const minutes = String(startDateObj.getMinutes()).padStart(2, '0');
-                        startTimeStr = `[${hours}:${minutes}] `; // 擷取具體時間
+                        startTimeStr = `[${hours}:${minutes}] `; 
                     }
                     
-                    // 處理結束日期
                     if (gEvent.end && gEvent.end.date) {
                         const endD = new Date(gEvent.end.date);
-                        endD.setDate(endD.getDate() - 1); // Google全天結束日多一天，退回一天以符合邏輯
+                        endD.setDate(endD.getDate() - 1); 
                         const yyyy = endD.getFullYear();
                         const mm = String(endD.getMonth() + 1).padStart(2, '0');
                         const dd = String(endD.getDate()).padStart(2, '0');
@@ -1998,25 +2032,20 @@ function renderAiResults(parsedEvents) {
 
                     if (!startDate) continue;
 
-                    // 轉換格式：自動將時間合併進標題，將地點合併進內容
                     const finalTitle = startTimeStr + title;
                     let finalContent = content;
                     
-                    // (新增) 抓取 Google Meet 連結
                     if (gEvent.hangoutLink) {
                         finalContent = `🎥 會議連結：${gEvent.hangoutLink}\n\n${finalContent}`;
                     }
-
                     if (location) {
                         finalContent = `📍 地點：${location}\n\n${finalContent}`;
                     }
 
-                    // 防止重複
                     const exists = events.some(e => e.title === finalTitle && e.date === startDate);
                     if (!exists) {
                         const newGroupId = generateGroupId();
                         
-                        // 支援多日事件：自動展開 Google 行事曆的跨天格式
                         for (const d of dateRange(startDate, endDate)) {
                             const dateStr = formatDateYYYYMMDD(d);
                             const newDocRef = doc(eventsCollectionRef);
@@ -2029,7 +2058,8 @@ function renderAiResults(parsedEvents) {
                                 color: 'blue', 
                                 emoji: '📅',
                                 groupId: newGroupId,
-                                gcalEventId: gEvent.id 
+                                gcalEventId: gEvent.id,
+                                gcalCalendarId: gEvent._sourceCalId // 🌟 寫入血統標籤至資料庫
                             });
                         }
                         importCount++;
@@ -2049,44 +2079,57 @@ function renderAiResults(parsedEvents) {
                     showCustomAlert("已取消 Google 授權。");
                 } else {
                     showCustomAlert("驗證失敗，請嘗試清除瀏覽器資料或重新整理網頁。\n錯誤訊息：" + (err.message || "無"));
-                    localStorage.removeItem('gcal_token_data'); // 發生錯誤時清除無效快取
+                    localStorage.removeItem('gcal_token_data'); 
                 }
             }
         };
 
-        // [功能 2] 智慧同步上傳至 Google 行事曆 (以 AI 雲端為主)
+        // [功能 2] 智慧同步上傳至 Google 行事曆 (認祖歸宗與防呆隔離)
         window.syncToGCal = async () => {
             if (!isAdmin) { showCustomAlert("僅限管理員操作！"); return; }
             if (GOOGLE_CLIENT_ID.includes('請貼上')) { showCustomAlert("系統未設定 Google Client ID，無法同步！"); return; }
 
-            showCustomConfirm("即將啟動智慧同步！\n系統將以「AI 雲端」為主，針對您的 Google 行事曆進行【新增補齊】與【修改覆寫】，確定要執行嗎？", async (choice) => {
+            showCustomConfirm("即將啟動智慧同步！\n系統將進行【新增補齊】與【修改覆寫】，確定要執行嗎？", async (choice) => {
                 if(choice !== 'confirm') return;
 
                 showCustomAlert("🔄 正在初始化並驗證 Google 服務，請稍候...");
                 await initGoogleCalendarApi();
                 
                 try {
-                    await getGoogleAuthToken(); // 呼叫自動驗證機制
+                    await getGoogleAuthToken(); 
                     document.getElementById('alertModal').style.display = 'none';
-                    showCustomAlert("🔍 正在比對 AI 與 Google 雙邊行事曆資料，請稍候...");
+                    showCustomAlert("🔍 正在比對雙邊行事曆資料，請稍候...");
                     
-                    // 1. 抓取 Google 未來事件建立「現存事件比對地圖」
+                    const cloudCalId = await getOrCreateCloudCalendar();
+
                     const timeMin = new Date();
-                    timeMin.setHours(0, 0, 0, 0); // 從今天凌晨起算
+                    timeMin.setHours(0, 0, 0, 0); 
                     
-                    const gcalResponse = await gapi.client.calendar.events.list({
+                    // 1. 抓取主要日曆與子日曆
+                    const primaryResp = await gapi.client.calendar.events.list({
                         'calendarId': 'primary',
                         'timeMin': timeMin.toISOString(),
-                        'showDeleted': false, // 不抓取已在 Google 垃圾桶的事件
+                        'showDeleted': false,
+                        'singleEvents': true,
+                    });
+                    const cloudResp = await gapi.client.calendar.events.list({
+                        'calendarId': cloudCalId,
+                        'timeMin': timeMin.toISOString(),
+                        'showDeleted': false,
                         'singleEvents': true,
                     });
                     
-                    const googleEvents = gcalResponse.result.items || [];
                     const googleEventsMap = new Map();
-                    // 用 Google ID 當作 Key 存起來
-                    googleEvents.forEach(ge => googleEventsMap.set(ge.id, ge));
+                    // 將兩邊事件存入 Map 以供快速比對
+                    (primaryResp.result.items || []).forEach(ge => googleEventsMap.set(ge.id, ge));
+                    (cloudResp.result.items || []).forEach(ge => googleEventsMap.set(ge.id, ge));
 
-                    // 2. 準備 AI 端的事件 (今天及未來)
+                    // 合併陣列，防範雙胞胎複製人使用
+                    const allGoogleEvents = [
+                        ...(primaryResp.result.items || []),
+                        ...(cloudResp.result.items || [])
+                    ];
+
                     const todayStr = formatDateYYYYMMDD(timeMin);
                     const aiEventsToProcess = events.filter(e => e.date >= todayStr);
 
@@ -2099,11 +2142,10 @@ function renderAiResults(parsedEvents) {
                     let updateCount = 0;
                     const batch = writeBatch(db); 
 
-                   // 3. 逐筆檢查 AI 事件
+                    // 3. 逐筆檢查 AI 事件
                     for (const ev of aiEventsToProcess) {
-                        const expectedDescription = (ev.content || "") + "\n\n(由雲教室行事曆自動同步)";
+                        const expectedDescription = (ev.content || "") + "\n\n(由雲教室自動同步)";
                         
-                        // 智慧分析是否帶有時間標籤 [HH:MM]
                         let isAllDay = true;
                         let startTimeStr = "";
                         let cleanTitle = ev.title;
@@ -2112,7 +2154,7 @@ function renderAiResults(parsedEvents) {
                         if (timeMatch) {
                             isAllDay = false;
                             startTimeStr = timeMatch[1];
-                            cleanTitle = timeMatch[2]; // 去除標題前面的時間標記
+                            cleanTitle = timeMatch[2]; 
                         }
 
                         const startD = ev.startDate || ev.date;
@@ -2122,14 +2164,12 @@ function renderAiResults(parsedEvents) {
                         let resourceEnd = {};
 
                         if (isAllDay) {
-                            // 全天事件 (需將結束日加1天才能符合 Google 格式)
                             const endObj = new Date(endD);
                             endObj.setDate(endObj.getDate() + 1);
                             const nextDayStr = formatDateYYYYMMDD(endObj);
                             resourceStart = { 'date': startD, 'timeZone': 'Asia/Taipei' };
                             resourceEnd = { 'date': nextDayStr, 'timeZone': 'Asia/Taipei' };
                         } else {
-                            // 具體時間事件 (自動推算時間長度 1 小時)
                             const startDateTime = `${startD}T${startTimeStr}:00`;
                             const endObj = new Date(`${endD}T${startTimeStr}:00`);
                             endObj.setHours(endObj.getHours() + 1);
@@ -2148,12 +2188,14 @@ function renderAiResults(parsedEvents) {
                             'end': resourceEnd
                         };
 
+                        // 判斷上傳目標：有血統跟著血統，沒有就預設上傳到雲教室子日曆
+                        const targetCalendarId = ev.gcalCalendarId || cloudCalId;
+
                         try {
                             if (!ev.gcalEventId) {
-                                // 📌 狀況 A：全新活動 (完全沒有 gcalEventId) - (v1.8.1 防重複機制)
+                                // 📌 狀況 A：全新活動 (防雙胞胎檢查)
                                 let matchedGoogleEvent = null;
-                                // 檢查 Google 行事曆中是否已經存在同日、同標題(或相似標題)的事件
-                                for (const gEvent of googleEvents) {
+                                for (const gEvent of allGoogleEvents) {
                                     let gcalDate = gEvent.start.date || (gEvent.start.dateTime ? gEvent.start.dateTime.split('T')[0] : '');
                                     let gcalSummary = gEvent.summary || "";
                                     
@@ -2164,32 +2206,31 @@ function renderAiResults(parsedEvents) {
                                 }
 
                                 if (matchedGoogleEvent) {
-                                    // 找到雙胞胎：不重複新增，直接綁定 Google ID 回 Firebase
+                                    // 找到雙胞胎：不重複新增，直接綁定 Google ID
                                     const docRef = doc(db, 'public_events', ev.id);
-                                    batch.update(docRef, { gcalEventId: matchedGoogleEvent.id });
-                                    addCount++; // 這裡借用 addCount 計數，確保會執行 batch.commit
-                                    console.log(`自動綁定已存在事件: ${cleanTitle}`);
+                                    let matchedCalId = (primaryResp.result.items || []).some(i => i.id === matchedGoogleEvent.id) ? 'primary' : cloudCalId;
+                                    batch.update(docRef, { gcalEventId: matchedGoogleEvent.id, gcalCalendarId: matchedCalId });
+                                    addCount++; 
                                 } else {
-                                    // 真的沒有，直接新增
+                                    // 真的沒有，直接新增到目標日曆
                                     const request = gapi.client.calendar.events.insert({
-                                        'calendarId': 'primary',
+                                        'calendarId': targetCalendarId,
                                         'resource': resource
                                     });
                                     const response = await request;
                                     if (response.result && response.result.id) {
                                         const docRef = doc(db, 'public_events', ev.id);
-                                        batch.update(docRef, { gcalEventId: response.result.id });
+                                        batch.update(docRef, { gcalEventId: response.result.id, gcalCalendarId: targetCalendarId });
                                         addCount++;
                                     }
                                 }
                             } else {
-                                // 檢查此 ID 是否真的存在於目前的 Google 行事曆中
                                 const gcalTarget = googleEventsMap.get(ev.gcalEventId);
                                 
                                 if (!gcalTarget) {
-                                    // 📌 狀況 B：在 Google 端被刪除了 (找不到) -> 重新新增補齊
+                                    // 📌 狀況 B：在 Google 端被刪除了 -> 重新新增補齊
                                     const request = gapi.client.calendar.events.insert({
-                                        'calendarId': 'primary',
+                                        'calendarId': targetCalendarId,
                                         'resource': resource
                                     });
                                     const response = await request;
@@ -2199,15 +2240,14 @@ function renderAiResults(parsedEvents) {
                                         addCount++;
                                     }
                                 } else {
-                                    // 📌 狀況 C：雙邊都有，比對細節是否有被修改
+                                    // 📌 狀況 C：雙邊都有，比對細節
                                     let gcalDate = gcalTarget.start.date || (gcalTarget.start.dateTime ? gcalTarget.start.dateTime.split('T')[0] : '');
                                     let gcalDesc = gcalTarget.description || "";
                                     let gcalSummary = gcalTarget.summary || "";
 
-                                    // 若標題、描述、日期有任一不相同，就覆寫 Google
                                     if (gcalSummary !== cleanTitle || gcalDesc !== expectedDescription || gcalDate !== startD) {
                                         const request = gapi.client.calendar.events.update({
-                                            'calendarId': 'primary',
+                                            'calendarId': targetCalendarId,
                                             'eventId': ev.gcalEventId,
                                             'resource': resource
                                         });
@@ -2217,12 +2257,11 @@ function renderAiResults(parsedEvents) {
                                 }
                             }
                         } catch (itemError) {
-                            // [v1.8.1 錯誤隔離] 擷取單筆更新錯誤 (如 403 權限不足)，並跳過，不中斷整體迴圈
-                            console.warn(`更新事件 ${cleanTitle} 時發生錯誤 (已跳過):`, itemError);
+                            // 🌟 錯誤隔離網：捕獲 403 權限不足等報錯，安全跳過，避免系統崩潰
+                            console.warn(`更新事件 [${cleanTitle}] 時發生錯誤 (略過)，原因:`, itemError);
                         }
                     }
 
-                    // 4. 提交寫入新的 Google ID 回 Firebase
                     if (addCount > 0) {
                         await batch.commit();
                     }
@@ -2239,7 +2278,7 @@ function renderAiResults(parsedEvents) {
                         showCustomAlert("已取消 Google 授權。");
                     } else {
                         showCustomAlert("同步過程中發生異常，請檢查網路連線。\n錯誤：" + (err.result?.error?.message || err.message));
-                        localStorage.removeItem('gcal_token_data'); // 異常時清除快取，避免死循環
+                        localStorage.removeItem('gcal_token_data'); 
                     }
                 }
             });
@@ -3915,7 +3954,7 @@ function renderAiResults(parsedEvents) {
         <div class="login-section">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <h4 style="margin: 0;">🔑 帳號狀態</h4>
-                <span style="font-size: 0.85rem; color: var(--color-white); font-weight: bold; background: var(--color-primary); padding: 3px 10px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">v1.2.8</span>
+                <span style="font-size: 0.85rem; color: var(--color-white); font-weight: bold; background: var(--color-primary); padding: 3px 10px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">v1.2.9</span>
             </div>
             <button id="loginBtn" onclick="loginWithGoogle()">🚀 使用 Google 登入</button>
             <div id="userInfo" style="display: none;">
