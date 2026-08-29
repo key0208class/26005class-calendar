@@ -1853,7 +1853,8 @@ function renderAiResults(parsedEvents) {
         // ==========================================
         const GOOGLE_CLIENT_ID = '123055248147-ntkm18a2k6j37npt76me4gp5hu9rbf6g.apps.googleusercontent.com'; 
         const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
-        const SCOPES = 'https://www.googleapis.com/auth/calendar.events';
+        // (v1.2.9 修正) 擴大權限範圍，允許系統建立「雲教室行事曆」子日曆
+        const SCOPES = 'https://www.googleapis.com/auth/calendar';
         let tokenClient;
         let gapiInited = false;
         let gisInited = false;
@@ -2078,7 +2079,8 @@ function renderAiResults(parsedEvents) {
                 if (err.error === 'popup_closed_by_user') {
                     showCustomAlert("已取消 Google 授權。");
                 } else {
-                    showCustomAlert("驗證失敗，請嘗試清除瀏覽器資料或重新整理網頁。\n錯誤訊息：" + (err.message || "無"));
+                    // (v1.2.9 修正) 更精準抓取 Google 深層錯誤訊息，避免顯示"無"
+                    showCustomAlert("驗證或讀取失敗，請嘗試清除瀏覽器資料或重新整理網頁。\n錯誤訊息：" + (err.result?.error?.message || err.message || JSON.stringify(err) || "未知錯誤"));
                     localStorage.removeItem('gcal_token_data'); 
                 }
             }
