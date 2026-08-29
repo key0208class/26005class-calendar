@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- (v1.6.0) 更新版本號 -->
-    <title>雲教室行事曆 v1.2.7 (智慧同步版)</title>
+    <title>雲教室行事曆 v1.2.8 (智慧同步版)</title>
 
     <!-- 匯入 Firebase SDK -->
     <script type="module">
@@ -1180,9 +1180,12 @@
         }
 // --- (v1.7.0) AI 辨識輔助工具函式 ---
 
-        // 開啟 AI 輔助 Modal
+      // 開啟 AI 輔助 Modal
         // 開啟 AI 輔助 Modal (v1.8.0 移除管理員檢查，並加入讀取 Key)
         window.openAiHelperModal = () => {
+            // (v1.8.1) 開啟 AI 視窗時，自動隱藏設定面板，避免手機版疊加干擾
+            document.getElementById('settingsPanel').style.display = 'none';
+
             // (v1.8.0) 權限檢查已移除
             // if (!isAdmin) {
             //     showCustomAlert("僅限管理員才能使用此功能！");
@@ -2096,7 +2099,7 @@ function renderAiResults(parsedEvents) {
                     let updateCount = 0;
                     const batch = writeBatch(db); 
 
-                    // 3. 逐筆檢查 AI 事件
+                   // 3. 逐筆檢查 AI 事件
                     for (const ev of aiEventsToProcess) {
                         const expectedDescription = (ev.content || "") + "\n\n(由雲教室行事曆自動同步)";
                         
@@ -2145,51 +2148,77 @@ function renderAiResults(parsedEvents) {
                             'end': resourceEnd
                         };
 
-                        if (!ev.gcalEventId) {
-                            // 📌 狀況 A：全新活動 (完全沒有 gcalEventId)
-                            const request = gapi.client.calendar.events.insert({
-                                'calendarId': 'primary',
-                                'resource': resource
-                            });
-                            const response = await request;
-                            if (response.result && response.result.id) {
-                                const docRef = doc(db, 'public_events', ev.id);
-                                batch.update(docRef, { gcalEventId: response.result.id });
-                                addCount++;
-                            }
-                        } else {
-                            // 檢查此 ID 是否真的存在於目前的 Google 行事曆中
-                            const gcalTarget = googleEventsMap.get(ev.gcalEventId);
-                            
-                            if (!gcalTarget) {
-                                // 📌 狀況 B：在 Google 端被刪除了 (找不到) -> 重新新增補齊
-                                const request = gapi.client.calendar.events.insert({
-                                    'calendarId': 'primary',
-                                    'resource': resource
-                                });
-                                const response = await request;
-                                if (response.result && response.result.id) {
-                                    const docRef = doc(db, 'public_events', ev.id);
-                                    batch.update(docRef, { gcalEventId: response.result.id }); 
-                                    addCount++;
+                        try {
+                            if (!ev.gcalEventId) {
+                                // 📌 狀況 A：全新活動 (完全沒有 gcalEventId) - (v1.8.1 防重複機制)
+                                let matchedGoogleEvent = null;
+                                // 檢查 Google 行事曆中是否已經存在同日、同標題(或相似標題)的事件
+                                for (const gEvent of googleEvents) {
+                                    let gcalDate = gEvent.start.date || (gEvent.start.dateTime ? gEvent.start.dateTime.split('T')[0] : '');
+                                    let gcalSummary = gEvent.summary || "";
+                                    
+                                    if (gcalDate === startD && gcalSummary.includes(cleanTitle)) {
+                                        matchedGoogleEvent = gEvent;
+                                        break;
+                                    }
                                 }
-                            } else {
-                                // 📌 狀況 C：雙邊都有，比對細節是否有被修改
-                                let gcalDate = gcalTarget.start.date || (gcalTarget.start.dateTime ? gcalTarget.start.dateTime.split('T')[0] : '');
-                                let gcalDesc = gcalTarget.description || "";
-                                let gcalSummary = gcalTarget.summary || "";
 
-                                // 若標題、描述、日期有任一不相同，就覆寫 Google
-                                if (gcalSummary !== cleanTitle || gcalDesc !== expectedDescription || gcalDate !== startD) {
-                                    const request = gapi.client.calendar.events.update({
+                                if (matchedGoogleEvent) {
+                                    // 找到雙胞胎：不重複新增，直接綁定 Google ID 回 Firebase
+                                    const docRef = doc(db, 'public_events', ev.id);
+                                    batch.update(docRef, { gcalEventId: matchedGoogleEvent.id });
+                                    addCount++; // 這裡借用 addCount 計數，確保會執行 batch.commit
+                                    console.log(`自動綁定已存在事件: ${cleanTitle}`);
+                                } else {
+                                    // 真的沒有，直接新增
+                                    const request = gapi.client.calendar.events.insert({
                                         'calendarId': 'primary',
-                                        'eventId': ev.gcalEventId,
                                         'resource': resource
                                     });
-                                    await request;
-                                    updateCount++;
+                                    const response = await request;
+                                    if (response.result && response.result.id) {
+                                        const docRef = doc(db, 'public_events', ev.id);
+                                        batch.update(docRef, { gcalEventId: response.result.id });
+                                        addCount++;
+                                    }
+                                }
+                            } else {
+                                // 檢查此 ID 是否真的存在於目前的 Google 行事曆中
+                                const gcalTarget = googleEventsMap.get(ev.gcalEventId);
+                                
+                                if (!gcalTarget) {
+                                    // 📌 狀況 B：在 Google 端被刪除了 (找不到) -> 重新新增補齊
+                                    const request = gapi.client.calendar.events.insert({
+                                        'calendarId': 'primary',
+                                        'resource': resource
+                                    });
+                                    const response = await request;
+                                    if (response.result && response.result.id) {
+                                        const docRef = doc(db, 'public_events', ev.id);
+                                        batch.update(docRef, { gcalEventId: response.result.id }); 
+                                        addCount++;
+                                    }
+                                } else {
+                                    // 📌 狀況 C：雙邊都有，比對細節是否有被修改
+                                    let gcalDate = gcalTarget.start.date || (gcalTarget.start.dateTime ? gcalTarget.start.dateTime.split('T')[0] : '');
+                                    let gcalDesc = gcalTarget.description || "";
+                                    let gcalSummary = gcalTarget.summary || "";
+
+                                    // 若標題、描述、日期有任一不相同，就覆寫 Google
+                                    if (gcalSummary !== cleanTitle || gcalDesc !== expectedDescription || gcalDate !== startD) {
+                                        const request = gapi.client.calendar.events.update({
+                                            'calendarId': 'primary',
+                                            'eventId': ev.gcalEventId,
+                                            'resource': resource
+                                        });
+                                        await request;
+                                        updateCount++;
+                                    }
                                 }
                             }
+                        } catch (itemError) {
+                            // [v1.8.1 錯誤隔離] 擷取單筆更新錯誤 (如 403 權限不足)，並跳過，不中斷整體迴圈
+                            console.warn(`更新事件 ${cleanTitle} 時發生錯誤 (已跳過):`, itemError);
                         }
                     }
 
@@ -3586,8 +3615,24 @@ function renderAiResults(parsedEvents) {
              background: rgba(255,255,255,0.4);
              color: var(--color-black);
         }
-        /* --- 響應式設計 --- */
+       /* --- 響應式設計 --- */
         @media (max-width: 900px) {
+            /* (v1.8.1) 手機版 AI 辨識視窗 RWD 垂直排版 */
+            .ai-container {
+                flex-direction: column;
+                overflow-y: auto;
+            }
+            .ai-panel {
+                flex: none;
+            }
+            .ai-modal-content {
+                max-height: 95vh;
+                padding: 15px;
+            }
+            #aiResultsContainer {
+                min-height: 250px;
+            }
+
             /* (可自行修改) 當寬度小於 900px 時，取消縮放 */
             body {
                 padding-left: 0 !important; /* 手機版不為搜尋面板留空間 */
@@ -3870,7 +3915,7 @@ function renderAiResults(parsedEvents) {
         <div class="login-section">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <h4 style="margin: 0;">🔑 帳號狀態</h4>
-                <span style="font-size: 0.85rem; color: var(--color-white); font-weight: bold; background: var(--color-primary); padding: 3px 10px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">v1.2.7</span>
+                <span style="font-size: 0.85rem; color: var(--color-white); font-weight: bold; background: var(--color-primary); padding: 3px 10px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">v1.2.8</span>
             </div>
             <button id="loginBtn" onclick="loginWithGoogle()">🚀 使用 Google 登入</button>
             <div id="userInfo" style="display: none;">
